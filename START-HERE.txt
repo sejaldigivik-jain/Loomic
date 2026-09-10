@@ -1,0 +1,47 @@
+SOCIALFLOW — EASY START (WINDOWS)
+================================
+
+1) Extract this ZIP to a normal folder, for example:
+   D:\Insta\SocialFlow
+
+2) Open the folder in VS Code, or simply double-click:
+   RUN-SOCIALFLOW.bat
+
+   The launcher automatically:
+   - installs npm dependencies if missing
+   - prepares Prisma + SQLite
+   - creates a temporary public HTTPS bridge for Instagram media
+   - starts SocialFlow on http://localhost:3000
+
+3) Create/login to your SocialFlow account.
+
+4) Configure Instagram once:
+   SocialFlow > Settings > Integrations > Instagram
+   - Client ID / App ID = the "Instagram app ID" shown in Meta Developer
+   - Client Secret / App Secret = the "Instagram app secret" shown in Meta Developer
+   - Save integration
+
+5) EASIEST ACCOUNT CONNECTION WHILE TESTING LOCALLY (NO REDIRECT URL):
+   Meta Developer > your app > Use cases > Instagram API >
+   API setup with Instagram login > Generate access tokens
+   - Your Instagram account must be a Business or Creator account.
+   - Add it as an Instagram Tester first if Meta requires it.
+   - Click Generate token beside the account and approve access.
+   - Copy the token. Keep it private.
+
+   Then in SocialFlow:
+   Accounts > Instagram > Connect >
+   "Easy test connection — Meta generated token" > paste token > Connect real account
+
+6) PUBLISH:
+   Composer > select the connected Instagram account > upload one JPG >
+   write caption > Publish now
+
+IMPORTANT
+---------
+- Keep RUN-SOCIALFLOW.bat open while testing/publishing.
+- Do not share your App Secret or Instagram access token.
+- The temporary Cloudflare URL is used only as the public media bridge.
+- You do NOT need to configure Meta OAuth Redirect URL for the easy token connection.
+- For a customer-facing live product, deploy SocialFlow to a permanent HTTPS domain
+  and use the normal Production OAuth connection instead.

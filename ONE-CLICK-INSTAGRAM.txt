@@ -1,0 +1,27 @@
+SOCIALFLOW - ONE-CLICK INSTAGRAM TEST
+=====================================
+
+1. Double-click START-SOCIALFLOW-PUBLIC.bat
+2. Wait. SocialFlow automatically:
+   - checks/install dependencies
+   - prepares Prisma/database
+   - finds or downloads cloudflared
+   - creates a temporary HTTPS URL
+   - starts SocialFlow using that public URL
+   - copies the Instagram callback URL to your clipboard
+   - opens the public SocialFlow URL in your browser
+3. In Meta Developers -> Instagram API -> API setup with Instagram login
+   -> 4. Set up Instagram business login, paste the callback URL and Save.
+4. In SocialFlow -> Settings -> Integrations -> Instagram, enter only the
+   Instagram App ID and Instagram App Secret, then Save integration.
+   When SocialFlow is opened through the tunnel, a previously-saved localhost
+   redirect is automatically replaced at runtime by the current public callback.
+5. Accounts -> Instagram -> Connect -> authorize your Instagram account.
+
+IMPORTANT:
+- Keep START-SOCIALFLOW-PUBLIC.bat open while testing.
+- The temporary trycloudflare.com address changes when you stop/restart it.
+- If the address changes, Meta requires the new redirect URL. That requirement
+  is imposed by Meta OAuth and cannot be bypassed by SocialFlow.
+- For permanent/live use, deploy SocialFlow on a stable HTTPS domain so the
+  callback is registered only once.

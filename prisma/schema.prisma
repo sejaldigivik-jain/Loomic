@@ -1,0 +1,912 @@
+/**
+ * SocialFlow — Production Prisma Schema
+ * Covers the full SaaS data model:
+ * 1.  Users          — authentication, profile, preferences
+ * 2.  Accounts       — OAuth + password credentials
+ * 3.  Sessions       — JWT refresh token tracking
+ * 4.  Workspaces     — multi-tenant isolation (multi-workspace premium)
+ * 5.  Memberships    — user <-> workspace with roles
+ * 6.  SocialAccounts — connected channels (LinkedIn, X, IG, ...)
+ * 7.  Posts          — content drafts, scheduled, published
+ * 8.  PostTargets    — per-platform publish state of a post
+ * 9.  Media          — uploaded images / videos
+ * 10.  CalendarEvents — derived scheduling slots (queue + overrides)
+ * 11.  Analytics      — per-post, per-platform metrics snapshots
+ * 12.  Teams          — sub-grouping inside a workspace
+ * 13.  Invitations    — pending workspace invites
+ * 14.  Notifications  — in-app notification feed
+ * 15.  Plans          — subscription plan catalogue
+ * 16.  Subscriptions  — active workspace billing state
+ * 17.  Invoices       — historical billing records
+ * 18.  ApiTokens      — personal access tokens for the REST API
+ * 19.  AuditLogs      — security & action audit trail
+ * 20.  Webhooks       — outbound webhook endpoints
+ * 21.  Comments       — collaboration comments on posts
+ * 22.  Approvals      — approval workflow state machine
+ * SocialFlow uses PostgreSQL on Supabase for both local development and production.
+ */
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Enumerations
+ */
+/**
+ * Stored as String for SQLite compatibility (Prisma emulates enums).
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+model User {
+  id                 String    @id @default(cuid())
+  email              String    @unique
+  emailVerified      DateTime?
+  name               String?
+  image              String?
+  passwordHash       String?
+  /**
+   * Default preferred UI theme — "dark" | "light" | "system"
+   */
+  theme              String    @default("dark")
+  /**
+   * Default workspace the user lands in after sign-in
+   */
+  defaultWorkspaceId String?
+  /**
+   * Onboarding state — "pending" | "completed"
+   */
+  onboardingState    String    @default("pending")
+  /**
+   * Marketing/email preferences, JSON-encoded
+   */
+  preferences        String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  deletedAt          DateTime?
+
+  accounts                Account[]
+  sessions                Session[]
+  memberships             Membership[]
+  posts                   Post[]                   @relation("PostAuthor")
+  createdPosts            Post[]                   @relation("PostCreatedBy")
+  apiTokens               ApiToken[]
+  auditLogs               AuditLog[]
+  notifications           Notification[]
+  comments                Comment[]
+  invitations             Invitation[]             @relation("InvitationInviter")
+  clientAssignments       ClientAssignment[]
+  accountAssignments      AccountAssignment[]
+  accountConnectionGrants AccountConnectionGrant[]
+}
+
+/// OAuth credentials linked to a user (Google, LinkedIn, etc.) and the
+/// password credential when email/password is used.
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+/// Refresh-token sessions for JWT auth. Each login creates a session; each
+/// logout revokes it. Allows listing "signed in on these devices".
+model Session {
+  id           String    @id @default(cuid())
+  userId       String
+  sessionToken String    @unique
+  /**
+   * IP + user-agent snapshot for security audit
+   */
+  ip           String?
+  userAgent    String?
+  expires      DateTime
+  createdAt    DateTime  @default(now())
+  revokedAt    DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Workspaces & Memberships
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+model Workspace {
+  id           String   @id @default(cuid())
+  name         String
+  slug         String   @unique
+  logoUrl      String?
+  timezone     String   @default("UTC")
+  customDomain String?
+  /**
+   * Plan-tier override for white-label customers
+   */
+  brandColor   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  memberships             Membership[]
+  socialAccounts          SocialAccount[]
+  providerCredentials     ProviderCredential[]
+  posts                   Post[]
+  calendarEvents          CalendarEvent[]
+  teams                   Team[]
+  invitations             Invitation[]
+  notifications           Notification[]
+  subscription            Subscription?
+  invoices                Invoice[]
+  webhooks                Webhook[]
+  auditLogs               AuditLog[]
+  clients                 Client[]
+  accountConnectionLock   AccountConnectionLock?
+  accountConnectionGrants AccountConnectionGrant[]
+}
+
+/// User <-> Workspace membership with role. Roles: owner | admin | editor | contributor | viewer
+model Membership {
+  id          String   @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        String   @default("editor")
+  /**
+   * The currently active workspace for this user (only one at a time)
+   */
+  isActive    Boolean  @default(false)
+  joinedAt    DateTime @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Social provider app credentials
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+/// OAuth developer-app credentials used to connect real social accounts.
+/// Secrets are encrypted before storage. A workspace can configure one app
+/// per provider and reuse it for all client accounts connected to that workspace.
+model ProviderCredential {
+  id           String   @id @default(cuid())
+  workspaceId  String
+  provider     String
+  clientId     String
+  clientSecret String?
+  redirectUri  String?
+  enabled      Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, provider])
+  @@index([workspaceId])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Connected social accounts
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+/// A connected social channel inside a workspace. Each record stores the
+/// OAuth tokens required to publish on the user's behalf.
+model SocialAccount {
+  id             String    @id @default(cuid())
+  workspaceId    String
+  clientId       String?
+  platform       String /// "linkedin" | "twitter" | "instagram" | "facebook" | "threads" | "pinterest"
+  handle         String
+  displayName    String
+  avatarUrl      String?
+  /**
+   * Tailwind gradient classes for the avatar fallback
+   */
+  avatarGradient String?
+  followers      Int       @default(0)
+  /**
+   * OAuth access token (encrypted at rest in production)
+   */
+  accessToken    String
+  refreshToken   String?
+  /**
+   * Provider-side stable account/user id (e.g. Instagram numeric account id)
+   */
+  externalUserId String?
+  /**
+   * Provider-specific non-secret metadata as JSON (page/board/author settings).
+   */
+  providerData   String?
+  tokenExpiresAt DateTime?
+  status         String    @default("connected") /// "connected" | "expired" | "error"
+  connectedAt    DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  workspace                 Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client                    Client?                    @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  postTargets               PostTarget[]
+  analytics                 Analytics[]
+  accountAnalyticsSnapshots AccountAnalyticsSnapshot[]
+  instagramMediaInsights    InstagramMediaInsight[]
+  assignments               AccountAssignment[]
+
+  @@unique([workspaceId, platform, handle])
+  @@index([workspaceId])
+  @@index([clientId])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Clients / agency assignments
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+model Client {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  notes       String?
+  status      String   @default("active")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace      Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  assignments    ClientAssignment[]
+  socialAccounts SocialAccount[]
+  posts          Post[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+}
+
+model ClientAssignment {
+  id         String   @id @default(cuid())
+  clientId   String
+  userId     String
+  assignedAt DateTime @default(now())
+
+  client Client @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([clientId, userId])
+  @@index([userId])
+}
+
+/// Direct agency assignment. In the agency workflow each connected social
+/// account is treated as the client; no separate Client record is required.
+model AccountAssignment {
+  id              String   @id @default(cuid())
+  socialAccountId String
+  userId          String
+  assignedAt      DateTime @default(now())
+
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([socialAccountId, userId])
+  @@index([userId])
+  @@index([socialAccountId])
+}
+
+/// Owner-controlled permanent password protecting all new social-account connections.
+/// The password hash can be created once through the application; no update/reset
+/// route is exposed in the normal SocialFlow UI.
+model AccountConnectionLock {
+  workspaceId    String    @id
+  passwordHash   String
+  setByUserId    String
+  setAt          DateTime  @default(now())
+  failedAttempts Int       @default(0)
+  lastFailedAt   DateTime?
+  lockedUntil    DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+/// Short-lived one-use unlock grant. A row is deleted atomically when an
+/// account-connection endpoint consumes it, so the same unlock cannot be replayed.
+model AccountConnectionGrant {
+  id          String   @id
+  workspaceId String
+  userId      String
+  createdAt   DateTime @default(now())
+  expiresAt   DateTime
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Posts & Media
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+/// The canonical post record. A post can target multiple platforms; each
+/// target is materialized as a PostTarget row so we can track per-platform
+/// publish state independently.
+model Post {
+  id              String    @id @default(cuid())
+  workspaceId     String
+  clientId        String?
+  authorId        String
+  createdByUserId String?
+  content         String
+  /**
+   * Optional title for internal labeling / SEO-driven platforms
+   */
+  title           String?
+  status          String    @default("draft") /// "draft" | "scheduled" | "publishing" | "published" | "failed" | "archived"
+  scheduledAt     DateTime?
+  publishedAt     DateTime?
+  /**
+   * Hashtags stored as JSON string array for SQLite compat
+   */
+  hashtags        String?
+  /**
+   * Mentions stored as JSON string array
+   */
+  mentions        String?
+  /**
+   * Link attachments
+   */
+  linkUrl         String?
+  /**
+   * AI generation metadata: model used, prompt, tone, etc.
+   */
+  aiMeta          String?
+  /**
+   * Approval workflow: "none" | "pending" | "approved" | "rejected"
+   */
+  approvalState   String    @default("none")
+  approvedById    String?
+  approvedAt      DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client    Client?      @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  author    User         @relation("PostAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  createdBy User?        @relation("PostCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  media     Media[]
+  targets   PostTarget[]
+  analytics Analytics[]
+  comments  Comment[]
+
+  @@index([workspaceId, status])
+  @@index([workspaceId, scheduledAt])
+  @@index([clientId])
+  @@index([authorId])
+  @@index([createdByUserId])
+}
+
+/// Per-platform publish target. A single Post fans out into N targets.
+/// Each target tracks its own status, external ID and error message.
+model PostTarget {
+  id              String    @id @default(cuid())
+  postId          String
+  socialAccountId String
+  /**
+   * Per-platform tailored content (overrides Post.content if set)
+   */
+  content         String?
+  status          String    @default("pending") /// "pending" | "publishing" | "published" | "failed"
+  externalId      String?
+  externalUrl     String?
+  errorMessage    String?
+  publishedAt     DateTime?
+
+  post          Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@index([socialAccountId])
+}
+
+/// Uploaded media (images, videos) attached to a post.
+model Media {
+  id           String   @id @default(cuid())
+  postId       String
+  type         String /// "image" | "video"
+  url          String
+  thumbnailUrl String?
+  altText      String?
+  width        Int?
+  height       Int?
+  sizeBytes    Int?
+  /**
+   * Source: "upload" | "canva" | "stock" | "url"
+   */
+  source       String   @default("upload")
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Calendar / Queue
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+/// Derived calendar events for the drag-and-drop scheduler view. Posts
+/// with status="scheduled" always have a calendar event; ad-hoc time
+/// blocks ("content theme for Monday") can exist without a post.
+model CalendarEvent {
+  id          String   @id @default(cuid())
+  workspaceId String
+  postId      String?
+  /**
+   * Title shown on the calendar when no post is linked
+   */
+  title       String?
+  scheduledAt DateTime
+  durationMin Int      @default(60)
+  /**
+   * "post" | "block" | "idea"
+   */
+  type        String   @default("post")
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, scheduledAt])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Analytics
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+/// Time-series snapshot of a post's performance on a specific platform.
+/// A background job ingests these periodically from platform APIs.
+model Analytics {
+  id              String   @id @default(cuid())
+  postId          String
+  socialAccountId String
+  date            DateTime
+  reach           Int      @default(0)
+  impressions     Int      @default(0)
+  likes           Int      @default(0)
+  comments        Int      @default(0)
+  shares          Int      @default(0)
+  saves           Int      @default(0)
+  clicks          Int      @default(0)
+  engagementRate  Float    @default(0)
+  followersGained Int      @default(0)
+  createdAt       DateTime @default(now())
+
+  post          Post          @relation(fields: [postId], references: [id], onDelete: Cascade)
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, socialAccountId, date])
+  @@index([socialAccountId, date])
+}
+
+/// Daily account-level Instagram insight snapshot. Values are returned by
+/// Meta for professional Business/Creator accounts and stored so SocialFlow
+/// can compare time periods without fabricating historical data.
+model AccountAnalyticsSnapshot {
+  id                String   @id @default(cuid())
+  socialAccountId   String
+  date              DateTime
+  /**
+   * Point-in-time profile follower total; only set when actually observed.
+   */
+  followers         Int?
+  /**
+   * Gross new followers reported for this day when Meta returns the metric.
+   */
+  newFollowers      Int      @default(0)
+  reach             Int      @default(0)
+  profileViews      Int      @default(0)
+  accountsEngaged   Int      @default(0)
+  totalInteractions Int      @default(0)
+  likes             Int      @default(0)
+  comments          Int      @default(0)
+  shares            Int      @default(0)
+  saves             Int      @default(0)
+  views             Int      @default(0)
+  syncedAt          DateTime @default(now())
+
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([socialAccountId, date])
+  @@index([socialAccountId, date])
+}
+
+/// Latest insight snapshot for every Instagram media item owned by a connected
+/// professional account. This includes content published outside SocialFlow.
+model InstagramMediaInsight {
+  id                String    @id @default(cuid())
+  socialAccountId   String
+  externalMediaId   String
+  caption           String?
+  mediaType         String?
+  mediaProductType  String?
+  permalink         String?
+  thumbnailUrl      String?
+  publishedAt       DateTime?
+  reach             Int       @default(0)
+  views             Int       @default(0)
+  likes             Int       @default(0)
+  comments          Int       @default(0)
+  shares            Int       @default(0)
+  saves             Int       @default(0)
+  totalInteractions Int       @default(0)
+  engagementRate    Float     @default(0)
+  avgWatchTimeMs    Float?
+  totalWatchTimeMs  Float?
+  syncedAt          DateTime  @default(now())
+
+  socialAccount SocialAccount @relation(fields: [socialAccountId], references: [id], onDelete: Cascade)
+
+  // Exact Meta media-insight values.
+  // Nullable intentionally: null means Meta did not return that metric.
+
+  metaReach        Int?
+  metaViews        Int?
+  metaTotalViews   Int?
+  metaDisplayViews Int?
+
+  metaFacebookViews    Int?
+  metaCrosspostedViews Int?
+
+  metaLikes             Int?
+  metaTotalLikes        Int?
+  metaComments          Int?
+  metaTotalComments     Int?
+  metaShares            Int?
+  metaSaves             Int?
+  metaTotalInteractions Int?
+
+  metaAccountsEngaged Int?
+
+  metaProfileActivity Int?
+  metaProfileVisits   Int?
+  metaFollows         Int?
+
+  metaFollowerViews    Int?
+  metaNonFollowerViews Int?
+
+  // Instagram Views source breakdown
+  metaFromHome     Int?
+  metaFromProfile  Int?
+  metaFromOther    Int?
+
+  // Instagram Profile activity breakdown
+  metaExternalLinkTaps     Int?
+  metaBusinessAddressTaps  Int?
+
+  metaFollowerInteractions    Int?
+  metaNonFollowerInteractions Int?
+
+  metaReelsSkipRate Float?
+
+  @@unique([socialAccountId, externalMediaId])
+  @@index([socialAccountId, publishedAt])
+  @@index([socialAccountId, reach])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Teams, Invitations & Collaboration
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+/// A sub-grouping inside a workspace (e.g. "Content team", "Client: Acme").
+/// Used to scope posts and approvals.
+model Team {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  color       String   @default("#4F46E5")
+  createdAt   DateTime @default(now())
+
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  members   TeamMember[]
+
+  @@index([workspaceId])
+}
+
+/// Membership inside a team (separate from workspace Membership).
+model TeamMember {
+  id      String   @id @default(cuid())
+  teamId  String
+  userId  String
+  role    String   @default("member") /// "lead" | "member"
+  addedAt DateTime @default(now())
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+}
+
+/// Pending workspace invitations.
+model Invitation {
+  id          String    @id @default(cuid())
+  workspaceId String
+  email       String
+  role        String    @default("editor")
+  token       String    @unique
+  invitedById String
+  status      String    @default("pending") /// "pending" | "accepted" | "revoked" | "expired"
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  invitedBy User      @relation("InvitationInviter", fields: [invitedById], references: [id])
+
+  @@index([workspaceId, status])
+  @@index([email])
+}
+
+/// Inline collaboration comments on a post draft.
+model Comment {
+  id        String   @id @default(cuid())
+  postId    String
+  userId    String
+  body      String
+  /**
+   * Optional anchor to a specific text range in the post content
+   */
+  anchor    String?
+  resolved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  post Post @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Notifications
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+model Notification {
+  id          String    @id @default(cuid())
+  userId      String
+  workspaceId String?
+  type        String /// "post.published" | "post.failed" | "approval.requested" | "team.invited" | "billing.renewed" ...
+  title       String
+  body        String?
+  link        String?
+  readAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Billing: Plans, Subscriptions, Invoices
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+/// Catalogue of subscription plans. Seeded by migration.
+model Plan {
+  id           String   @id @default(cuid())
+  slug         String   @unique /// "free" | "pro" | "team" | "agency"
+  name         String
+  tagline      String?
+  priceMonthly Int      @default(0)
+  priceAnnual  Int      @default(0)
+  /// Feature flags stored as JSON: { channels: 8, posts: -1, aiCredits: 100, members: 1, apiAccess: false }
+  features     String
+  highlighted  Boolean  @default(false)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  subscriptions Subscription[]
+}
+
+/// Active subscription state for a workspace.
+model Subscription {
+  id                 String    @id @default(cuid())
+  workspaceId        String    @unique
+  planId             String
+  status             String    @default("active") /// "active" | "trialing" | "past_due" | "canceled" | "paused"
+  interval           String    @default("monthly") /// "monthly" | "annual"
+  /// Stripe / LemonSqueezy / Paddle customer & subscription IDs
+  provider           String?
+  providerCustomerId String?
+  providerSubId      String?
+  trialEndsAt        DateTime?
+  currentPeriodEnd   DateTime?
+  canceledAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  plan      Plan      @relation(fields: [planId], references: [id])
+  invoices  Invoice[]
+
+  @@index([status])
+}
+
+/// Historical invoices / billing records.
+model Invoice {
+  id                String   @id @default(cuid())
+  workspaceId       String
+  subscriptionId    String?
+  amount            Int
+  currency          String   @default("usd")
+  status            String   @default("paid") /// "draft" | "open" | "paid" | "void" | "uncollectible"
+  providerInvoiceId String?
+  pdfUrl            String?
+  periodStart       DateTime
+  periodEnd         DateTime
+  createdAt         DateTime @default(now())
+
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  subscription Subscription? @relation(fields: [subscriptionId], references: [id])
+
+  @@index([workspaceId, createdAt])
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * API Tokens & Webhooks
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+/// Personal access tokens for the REST API (programmatic access).
+model ApiToken {
+  id         String    @id @default(cuid())
+  userId     String
+  name       String
+  /**
+   * SHA-256 hash of the token; the raw token is only shown once at creation
+   */
+  tokenHash  String    @unique
+  prefix     String /// First 8 chars for identification in UI
+  scopes     String    @default("read") /// "read" | "write" | "admin"
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+  createdAt  DateTime  @default(now())
+  revokedAt  DateTime?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+/// Outbound webhook endpoints configured by the workspace.
+model Webhook {
+  id          String    @id @default(cuid())
+  workspaceId String
+  url         String
+  secret      String?
+  events      String /// JSON array: ["post.published", "post.failed", ...]
+  isActive    Boolean   @default(true)
+  lastFiredAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+/**
+ * --------------------------------------------------------------------------
+ */
+/**
+ * Audit Log
+ */
+/**
+ * --------------------------------------------------------------------------
+ */
+
+/// Immutable security & action audit trail. Every privileged action appends
+/// a row here.
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String?
+  userId      String?
+  action      String /// "user.login" | "post.publish" | "workspace.member.invite" ...
+  targetType  String? /// "post" | "workspace" | "user" | "social_account" ...
+  targetId    String?
+  ip          String?
+  userAgent   String?
+  metadata    String? /// JSON blob with extra context
+  createdAt   DateTime @default(now())
+
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, createdAt])
+  @@index([userId, createdAt])
+  @@index([action])
+}

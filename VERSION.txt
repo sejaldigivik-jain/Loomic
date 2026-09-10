@@ -1,0 +1,2 @@
+SocialFlow Final6 Reel Processing Fix — 2026-08-24
+Feed / Reel / Story / Carousel + 1GB video uploads + reliable Meta processing wait/retry

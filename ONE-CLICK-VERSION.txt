@@ -1,0 +1,2 @@
+SOCIALFLOW ONE-CLICK PUBLIC UPDATE - 2026-08-17
+Includes: one-click public HTTPS starter, Cloudflare auto-detect/download, automatic tunnel-origin OAuth redirect handling, Next.js tunnel dev-origin allowance, loading fallback, and media input crash fix.

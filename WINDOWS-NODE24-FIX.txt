@@ -1,0 +1,4 @@
+SocialFlow Windows / Node 24 fix
+
+Fixes: spawnSync npx.cmd EINVAL during Prisma setup.
+Launcher no longer uses npx for Prisma or Next startup.

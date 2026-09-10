@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.env
+.env.*
+!.env.example
+!.env.production.example
+db/*.db
+db/*.db-journal
+public/uploads/*
+!public/uploads/.gitkeep
+*.log
+coverage
+out

@@ -1,0 +1,1130 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { motion } from "framer-motion";
+import {
+  BarChart3,
+  Bookmark,
+  Clock3,
+  Download,
+  ExternalLink,
+  Eye,
+  Film,
+  Heart,
+  RefreshCw,
+  Share2,
+  Sparkles,
+  TrendingDown,
+  TrendingUp,
+  Trophy,
+  UserPlus,
+  Users,
+  type LucideIcon,
+} from "lucide-react";
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { authenticatedFetch, useSocialFlow } from "@/lib/store";
+import { cn, formatCompact, formatNumber } from "@/lib/utils";
+import { toast } from "sonner";
+import { InsightsReport } from "@/components/app/views/insights-report";
+
+const RANGES = [
+  { id: "7d", label: "7 days" },
+  { id: "30d", label: "30 days" },
+  { id: "90d", label: "90 days" },
+  { id: "custom", label: "Custom" },
+] as const;
+
+type RangeId = (typeof RANGES)[number]["id"];
+
+type ContentOrder = "performance" | "latest";
+
+function dateInputValue(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function defaultCustomFrom() {
+  const date = new Date();
+  date.setFullYear(date.getFullYear() - 1);
+  return dateInputValue(date);
+}
+
+function defaultCustomTo() {
+  return dateInputValue(new Date());
+}
+
+function Delta({ value }: { value: number | null | undefined }) {
+  if (value === null || value === undefined) {
+    return <span className="text-xs font-medium text-primary">New vs previous period</span>;
+  }
+  const positive = value >= 0;
+  return (
+    <span className={cn("inline-flex items-center gap-1 text-xs font-medium", positive ? "text-emerald-500" : "text-rose-500")}>
+      {positive ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+      {positive ? "+" : ""}{value}% vs previous period
+    </span>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  icon: Icon,
+  delta,
+  suffix,
+  detail,
+}: {
+  label: string;
+  value: number | null;
+  icon: LucideIcon;
+  delta?: number | null;
+  suffix?: string;
+  detail?: string;
+}) {
+  return (
+    <Card className="border-border">
+      <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+        <CardTitle className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</CardTitle>
+        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 text-primary">
+          <Icon className="h-4 w-4" />
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="font-display text-3xl font-semibold tracking-tight">
+          {value === null
+            ? "Not available"
+            : (
+              <>
+                {suffix === "%"
+                  ? value.toFixed(2)
+                  : formatCompact(value)}
+                {suffix ?? ""}
+              </>
+            )}
+        </div>
+
+        <div className="mt-1 min-h-5">
+          {value === null ? (
+            <span className="text-xs text-muted-foreground">
+              {detail ??
+                "Meta did not return this metric for the selected period"}
+            </span>
+          ) : delta !== undefined ? (
+            <Delta value={delta} />
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              {detail}
+            </span>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function InsightRow({
+  label,
+  value,
+  suffix = "",
+  zeroWhenMissing = false,
+}: {
+  label: string;
+  value: number | null | undefined;
+  suffix?: string;
+  zeroWhenMissing?: boolean;
+}) {
+  const displayValue =
+    value === null ||
+      value === undefined
+      ? zeroWhenMissing
+        ? "0"
+        : "Not available"
+      : `${formatCompact(value)}${suffix}`;
+
+  return (
+    <div className="flex items-center justify-between gap-4 text-sm">
+      <span className="text-muted-foreground">
+        {label}
+      </span>
+
+      <span className="font-semibold">
+        {displayValue}
+      </span>
+    </div>
+  );
+}
+
+
+function InsightPercentRow({
+  label,
+  value,
+}: {
+  label: string;
+  value: number | null | undefined;
+}) {
+  if (
+    value === null ||
+    value === undefined
+  ) {
+    return (
+      <div className="flex items-center justify-between gap-4 text-sm">
+        <span className="text-muted-foreground">
+          {label}
+        </span>
+
+        <span className="text-muted-foreground">
+          Not available
+        </span>
+      </div>
+    );
+  }
+
+  const safeValue =
+    Math.max(
+      0,
+      Math.min(100, value),
+    );
+
+  return (
+    <div className="space-y-1.5">
+
+      <div className="flex items-center justify-between text-sm">
+        <span className="text-muted-foreground">
+          {label}
+        </span>
+
+        <span className="font-semibold">
+          {Number(value).toFixed(1)}%
+        </span>
+      </div>
+
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted">
+        <div
+          className="h-full rounded-full bg-primary"
+          style={{
+            width: `${safeValue}%`,
+          }}
+        />
+      </div>
+
+    </div>
+  );
+}
+
+export function AnalyticsView() {
+  const {
+    accounts,
+    workspaceId,
+    accessToken,
+    agencyClients,
+    agencyMemberId,
+    agencyClientId,
+    agencyPlatformId,
+  } = useSocialFlow();
+  const [range, setRange] = useState<RangeId>("30d");
+  const [contentOrder, setContentOrder] = useState<ContentOrder>("performance");
+  const [pageClientId, setPageClientId] = useState(agencyClientId);
+  const [customFrom, setCustomFrom] = useState(defaultCustomFrom);
+  const [customTo, setCustomTo] = useState(defaultCustomTo);
+  const [summary, setSummary] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+
+  const analyticsClientOptions = useMemo(() => {
+    return accounts
+      .filter((account: any) => String(account.platform ?? "").toLowerCase() === "instagram")
+      .map((account: any) => {
+        const linkedClient = agencyClients.find(
+          (client: any) =>
+            client.id === account.id ||
+            client.accounts?.some((linked: any) => linked.id === account.id),
+        );
+        const linkedAccount = linkedClient?.accounts?.find((linked: any) => linked.id === account.id);
+        const handle = String(account.handle ?? linkedAccount?.handle ?? "");
+        const fallbackName = handle.replace(/^@/, "") || "Instagram account";
+        return {
+          id: account.id,
+          name: linkedClient?.name || fallbackName,
+          handle,
+        };
+      });
+  }, [accounts, agencyClients]);
+
+  useEffect(() => {
+    setPageClientId(agencyClientId);
+  }, [agencyClientId]);
+
+  useEffect(() => {
+    if (
+      pageClientId !== "all" &&
+      analyticsClientOptions.length > 0 &&
+      !analyticsClientOptions.some((client) => client.id === pageClientId)
+    ) {
+      setPageClientId("all");
+    }
+  }, [analyticsClientOptions, pageClientId]);
+
+  const buildParams = useCallback(() => {
+    if (!workspaceId) return null;
+    const params = new URLSearchParams({ workspaceId, range });
+    if (range === "custom") {
+      if (!customFrom || !customTo) return null;
+      params.set("from", customFrom);
+      params.set("to", customTo);
+    }
+    if (agencyMemberId !== "all") params.set("memberId", agencyMemberId);
+    if (pageClientId !== "all") params.set("accountId", pageClientId);
+    if (agencyPlatformId !== "all") params.set("platform", agencyPlatformId);
+    return params;
+  }, [workspaceId, range, customFrom, customTo, agencyMemberId, pageClientId, agencyPlatformId]);
+
+  const loadSummary = useCallback(async (signal?: AbortSignal) => {
+    if (!workspaceId || !accessToken) return;
+    const params = buildParams();
+    if (!params) return;
+    setLoading(true);
+    try {
+      const res = await authenticatedFetch(`/api/v1/analytics/summary?${params.toString()}`, { signal });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json.error?.message ?? "Could not load Instagram analytics");
+      setSummary(json.data);
+    } catch (error) {
+      if ((error as any)?.name !== "AbortError") toast.error(error instanceof Error ? error.message : "Could not load analytics");
+    } finally {
+      setLoading(false);
+    }
+  }, [workspaceId, accessToken, buildParams]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadSummary(controller.signal);
+    return () => controller.abort();
+  }, [loadSummary]);
+
+  async function syncNow() {
+    const params = buildParams();
+
+    if (!params || !workspaceId) {
+      toast.error(
+        "Cannot sync because the Analytics account scope is incomplete.",
+      );
+      return;
+    }
+
+    setSyncing(true);
+
+    try {
+      const res = await authenticatedFetch(
+        `/api/v1/analytics/sync?${params.toString()}`,
+        {
+          method: "POST",
+        },
+      );
+
+      const json = await res.json();
+
+      if (!res.ok) {
+        throw new Error(
+          json.error?.message ??
+          "Instagram analytics sync failed",
+        );
+      }
+
+      const data = json.data;
+
+      /*
+       * Account requires reconnect / permission refresh.
+       */
+      if (data.needsReconnect?.length) {
+        const handles =
+          data.needsReconnect
+            .map(
+              (item: any) =>
+                item.handle,
+            )
+            .join(", ");
+
+        const firstError =
+          data.needsReconnect[0]?.error;
+
+        toast.error(
+          firstError
+            ? `${handles}: ${firstError}`
+            : `${handles} must be reconnected once to grant Instagram Insights permission.`,
+        );
+
+        return;
+      }
+
+      /*
+       * IMPORTANT:
+       * Previously failed syncs incorrectly displayed:
+       *
+       * "No eligible Instagram accounts in the selected scope."
+       *
+       * Show the REAL service error instead.
+       */
+      if (data.failed > 0) {
+        const failedResults =
+          (data.results ?? []).filter(
+            (item: any) =>
+              item.status === "failed",
+          );
+
+        const firstFailure =
+          failedResults[0];
+
+        const errorMessage =
+          firstFailure?.error ??
+          "Instagram analytics sync failed.";
+
+        toast.error(
+          firstFailure?.handle
+            ? `${firstFailure.handle}: ${errorMessage}`
+            : errorMessage,
+          {
+            duration: 10000,
+          },
+        );
+
+        console.error(
+          "[Loomic Instagram Sync Failed]",
+          data,
+        );
+
+        return;
+      }
+
+      /*
+       * Account was found but service deliberately skipped it.
+       */
+      const skippedResults =
+        (data.results ?? []).filter(
+          (item: any) =>
+            item.status === "skipped",
+        );
+
+      if (
+        data.synced === 0 &&
+        skippedResults.length > 0
+      ) {
+        const firstSkipped =
+          skippedResults[0];
+
+        toast.error(
+          firstSkipped?.error ??
+          "The selected Instagram account was skipped.",
+        );
+
+        console.warn(
+          "[Loomic Instagram Sync Skipped]",
+          data,
+        );
+
+        return;
+      }
+
+      /*
+       * Successful sync.
+       */
+      if (data.synced > 0) {
+        toast.success(
+          `Instagram analytics synced for ${data.synced} account${data.synced === 1
+            ? ""
+            : "s"
+          }.`,
+        );
+
+        await loadSummary();
+
+        return;
+      }
+
+      /*
+       * Only show the scope warning if the API genuinely
+       * processed zero accounts.
+       */
+      if (
+        Number(data.processed ?? 0) === 0
+      ) {
+        toast.info(
+          data.message ??
+          "No eligible Instagram accounts were found in the selected scope.",
+        );
+
+        return;
+      }
+
+      /*
+       * Safety fallback.
+       */
+      toast.error(
+        "Instagram sync did not complete. Check the server response.",
+      );
+
+      console.error(
+        "[Loomic Instagram Sync Unknown Result]",
+        data,
+      );
+    } catch (error) {
+      console.error(
+        "[Loomic Instagram Sync Request Error]",
+        error,
+      );
+
+      toast.error(
+        error instanceof Error
+          ? error.message
+          : "Instagram analytics sync failed",
+        {
+          duration: 10000,
+        },
+      );
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  const totals = summary?.totals ?? {
+    followers: 0,
+    followerGrowth: 0,
+    followerGrowthPct: 0,
+    reach: 0,
+    views: 0,
+    profileViews: 0,
+    engagement: 0,
+    engagementRate: 0,
+    shares: 0,
+    saves: 0,
+    contentPublished: 0,
+  };
+  const comparisons = summary?.comparisons ?? {};
+  const series = summary?.series ?? [];
+  const content = summary?.content ?? [];
+  const intelligence = summary?.intelligence ?? {};
+
+  const displayContent = useMemo(() => {
+    const items = [...content];
+    if (contentOrder === "latest") {
+      return items.sort((a: any, b: any) => {
+        const aTime = a.publishedAt ? new Date(a.publishedAt).getTime() : 0;
+        const bTime = b.publishedAt ? new Date(b.publishedAt).getTime() : 0;
+        return bTime - aTime;
+      });
+    }
+    return items.sort((a: any, b: any) => (a.rank ?? Number.MAX_SAFE_INTEGER) - (b.rank ?? Number.MAX_SAFE_INTEGER));
+  }, [content, contentOrder]);
+
+  const lastSynced = useMemo(() => {
+    if (!summary?.lastSyncedAt) return "Not synced yet";
+    return new Date(summary.lastSyncedAt).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  }, [summary?.lastSyncedAt]);
+
+  const selectedReportClient = analyticsClientOptions.find(
+    (client) => client.id === pageClientId,
+  );
+
+  const reportClientName =
+    pageClientId === "all"
+      ? "All assigned clients"
+      : selectedReportClient
+        ? selectedReportClient.handle
+          ? `${selectedReportClient.name} (${selectedReportClient.handle.startsWith("@")
+            ? selectedReportClient.handle
+            : `@${selectedReportClient.handle}`
+          })`
+          : selectedReportClient.name
+        : "Instagram";
+
+  const reportQueryString =
+    buildParams()?.toString() ?? "";
+
+  function exportCsv() {
+    const rows = [
+      ["rank", "published_at", "format", "caption", "reach", "views", "likes", "comments", "shares", "saves", "engagement_rate"],
+      ...displayContent.map((row: any) => [
+        row.rank,
+        row.publishedAt ?? "",
+        row.format ?? "",
+        row.caption ?? "",
+        row.reach ?? 0,
+        row.views ?? 0,
+        row.likes ?? 0,
+        row.comments ?? 0,
+        row.shares ?? 0,
+        row.saves ?? 0,
+        row.engagementRate ?? 0,
+      ]),
+    ];
+    const csv = rows.map((row: any[]) => row.map((value) => `"${String(value).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const rangeLabel = range === "custom" ? `${customFrom}-to-${customTo}` : range;
+    a.download = `socialflow-instagram-analytics-${rangeLabel}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    toast.success("Instagram analytics CSV downloaded");
+  }
+
+  return (
+    <div className="space-y-6 p-4 sm:p-6 lg:p-8">
+      <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+        <div>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="font-display text-2xl font-semibold tracking-tight">Instagram Analytics</h1>
+            <Badge variant="secondary" className="border border-emerald-500/20 bg-emerald-500/10 text-emerald-500">Live Instagram data</Badge>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Account performance, content analytics and Loomic Intelligence for the selected professional Instagram account(s).
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Last synced: {lastSynced}
+            {range === "custom" && customFrom && customTo ? ` · Showing ${customFrom} to ${customTo}` : ""}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Tabs value={range} onValueChange={(value) => setRange(value as RangeId)}>
+            <TabsList>
+              {RANGES.map((item) => <TabsTrigger key={item.id} value={item.id} className="text-xs">{item.label}</TabsTrigger>)}
+            </TabsList>
+          </Tabs>
+          <Button variant="outline" size="sm" onClick={syncNow} disabled={syncing || loading}>
+            <RefreshCw className={cn("mr-1.5 h-4 w-4", syncing && "animate-spin")} />
+            {syncing ? "Syncing…" : "Sync Instagram"}
+          </Button>
+          <Button variant="outline" size="sm" onClick={exportCsv} disabled={!content.length}>
+            <Download className="mr-1.5 h-4 w-4" /> Export
+          </Button>
+        </div>
+      </motion.div>
+
+      {range === "custom" && (
+        <Card className="border-primary/15 bg-muted/35">
+          <CardContent className="flex flex-col gap-3 p-4 lg:flex-row lg:items-end lg:justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <label className="grid gap-1.5">
+                <span className="text-xs font-semibold text-muted-foreground">From date</span>
+                <input
+                  type="date"
+                  value={customFrom}
+                  max={customTo || defaultCustomTo()}
+                  onChange={(event) => setCustomFrom(event.target.value)}
+                  className="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/15"
+                />
+              </label>
+              <label className="grid gap-1.5">
+                <span className="text-xs font-semibold text-muted-foreground">To date</span>
+                <input
+                  type="date"
+                  value={customTo}
+                  min={customFrom || undefined}
+                  max={defaultCustomTo()}
+                  onChange={(event) => setCustomTo(event.target.value)}
+                  className="h-9 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none transition-colors focus:border-primary focus:ring-2 focus:ring-primary/15"
+                />
+              </label>
+              <Button variant="secondary" size="sm" onClick={() => void loadSummary()} disabled={loading || !customFrom || !customTo}>
+                Apply dates
+              </Button>
+            </div>
+            <div className="max-w-xl text-xs leading-5 text-muted-foreground">
+              Custom dates filter synced Instagram content for any stored period. Meta only keeps account-level User Insights for up to 90 days, so older custom ranges can still show synced Post/Reel/Carousel analytics even when historical account reach or profile activity is unavailable.
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!summary?.lastSyncedAt && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardContent className="flex flex-col gap-3 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="font-medium">Start with a real Instagram Insights sync</p>
+              <p className="text-xs text-muted-foreground">Your connected account must be Business or Creator and the token must include Instagram Insights permission.</p>
+            </div>
+            <Button size="sm" onClick={syncNow} disabled={syncing}>{syncing ? "Syncing…" : "Sync now"}</Button>
+          </CardContent>
+        </Card>
+      )}
+
+      <Tabs defaultValue="account" className="space-y-5">
+        <div className="flex flex-col gap-3 rounded-xl border border-border bg-muted/40 p-2.5 lg:flex-row lg:items-center">
+          <div className="flex min-w-0 items-center gap-2 rounded-lg bg-background/55 px-2.5 py-1.5">
+            <span className="shrink-0 text-xs font-semibold text-muted-foreground">Client</span>
+            <select
+              aria-label="Select client for Instagram analytics"
+              value={pageClientId}
+              onChange={(event) => setPageClientId(event.target.value)}
+              className="h-8 min-w-[190px] max-w-full cursor-pointer rounded-md border border-border bg-background px-3 text-sm font-medium text-foreground outline-none transition-colors hover:border-primary/40 focus:border-primary focus:ring-2 focus:ring-primary/15"
+            >
+              <option value="all">All assigned clients</option>
+              {analyticsClientOptions.map((client) => {
+                const cleanHandle = client.handle ? client.handle.replace(/^@/, "") : "";
+                return (
+                  <option key={client.id} value={client.id}>
+                    {client.name}{cleanHandle && !client.name.toLowerCase().includes(cleanHandle.toLowerCase()) ? ` (@${cleanHandle})` : ""}
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          <TabsList className="h-auto flex-wrap justify-start bg-background/55">
+            <TabsTrigger value="account">Account Analytics</TabsTrigger>
+            <TabsTrigger value="content">Content Analytics</TabsTrigger>
+            <TabsTrigger value="intelligence">Loomic Intelligence</TabsTrigger>
+            <TabsTrigger value="report">Insights Report</TabsTrigger>
+          </TabsList>
+        </div>
+
+        <TabsContent value="account" className="space-y-5">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <MetricCard label="Followers" value={totals.followers ?? 0} icon={Users} detail={`${summary?.accountCount ?? 0} Instagram account(s)`} />
+            <MetricCard label="Follower growth" value={totals.followerGrowth ?? 0} icon={UserPlus} detail={totals.followerGrowthPct == null ? "Growth tracking has started" : `${totals.followerGrowthPct >= 0 ? "+" : ""}${totals.followerGrowthPct}% in selected period`} />
+            <MetricCard label="Reach" value={totals.reach ?? 0} icon={Eye} delta={comparisons.reach} />
+            <MetricCard
+              label="Engagement rate"
+              value={
+                totals.engagementRateAvailable === false
+                  ? null
+                  : totals.engagementRate ?? null
+              }
+              icon={Heart}
+              suffix="%"
+              delta={
+                comparisons.engagementRate ??
+                undefined
+              }
+              detail={
+                totals.engagementRateSource === "content"
+                  ? "Calculated from real selected-period content interactions ÷ content reach"
+                  : totals.engagementRateSource === "account"
+                    ? "Instagram account-level engagement rate"
+                    : "Meta account engagement is unavailable and no usable content reach exists"
+              }
+            />
+            <MetricCard label="Profile activity" value={totals.profileViews ?? 0} icon={BarChart3} delta={comparisons.profileViews} />
+            <MetricCard label="Content published" value={totals.contentPublished ?? 0} icon={Film} delta={comparisons.contentPublished} />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3">
+            <Card className="border-border lg:col-span-2">
+              <CardHeader>
+                <CardTitle className="text-base">Account performance trend</CardTitle>
+                <p className="text-xs text-muted-foreground">Daily reach and interactions returned by Instagram Insights.</p>
+              </CardHeader>
+              <CardContent>
+                <div className="h-72">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={series} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="analytics-reach" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#6366f1" stopOpacity={0.38} /><stop offset="100%" stopColor="#6366f1" stopOpacity={0} /></linearGradient>
+                        <linearGradient id="analytics-engagement" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#a855f7" stopOpacity={0.25} /><stop offset="100%" stopColor="#a855f7" stopOpacity={0} /></linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                      <XAxis dataKey="date" tickFormatter={(d) => new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "short" })} tick={{ fontSize: 11, fill: "currentColor" }} tickLine={false} axisLine={false} interval={Math.max(0, Math.floor(series.length / 6))} />
+                      <YAxis tick={{ fontSize: 11, fill: "currentColor" }} tickLine={false} axisLine={false} tickFormatter={(value) => formatCompact(value)} />
+                      <Tooltip contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 12, fontSize: 12 }} />
+                      <Area type="monotone" dataKey="reach" name="Reach" stroke="#6366f1" strokeWidth={2.4} fill="url(#analytics-reach)" />
+                      <Area type="monotone" dataKey="engagement" name="Interactions" stroke="#a855f7" strokeWidth={2} fill="url(#analytics-engagement)" />
+                    </AreaChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-border">
+              <CardHeader><CardTitle className="text-base">Account breakdown</CardTitle></CardHeader>
+              <CardContent className="space-y-3">
+                {(summary?.accounts ?? []).map((account: any) => (
+                  <div key={account.id} className="rounded-xl border border-border p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0"><p className="truncate text-sm font-medium">{account.handle}</p><p className="text-xs text-muted-foreground">{formatNumber(account.followers)} followers</p></div>
+                      <Badge variant="secondary">Instagram</Badge>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+                      <div><span className="text-muted-foreground">Reach</span><p className="font-medium">{formatCompact(account.reach)}</p></div>
+                      <div><span className="text-muted-foreground">ER</span><p className="font-medium">{account.engagementRate}%</p></div>
+                    </div>
+                  </div>
+                ))}
+                {!summary?.accounts?.length && <p className="text-sm text-muted-foreground">No Instagram account in the selected scope.</p>}
+              </CardContent>
+            </Card>
+          </div>
+
+          <p className="text-xs text-muted-foreground">{summary?.meta?.historyNote}</p>
+        </TabsContent>
+
+        <TabsContent value="content" className="space-y-5">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <MetricCard label="Posts / Reels" value={totals.contentPublished ?? 0} icon={Film} delta={comparisons.contentPublished} />
+            <MetricCard label="Content reach" value={content.reduce((n: number, item: any) => n + (item.reach ?? 0), 0)} icon={Eye} delta={comparisons.contentReach} />
+            <MetricCard label="Shares" value={totals.shares ?? 0} icon={Share2} detail="Instagram account insights" />
+            <MetricCard label="Saves" value={totals.saves ?? 0} icon={Bookmark} detail="Instagram account insights" />
+          </div>
+
+          <Card className="border-border">
+            <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <CardTitle className="text-base">
+                  {contentOrder === "performance" ? "Content performance ranking" : "Posts in publishing order"}
+                </CardTitle>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {contentOrder === "performance"
+                    ? "Best-performing Instagram content first, ranked from the real synced insights."
+                    : "Normal Instagram posting order — newest post first, then progressively older posts."}
+                </p>
+              </div>
+              <div className="flex w-full shrink-0 rounded-lg border border-border bg-muted/40 p-1 sm:w-auto">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={contentOrder === "performance" ? "secondary" : "ghost"}
+                  className="flex-1 text-xs sm:flex-none"
+                  onClick={() => setContentOrder("performance")}
+                >
+                  Performance ranking
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={contentOrder === "latest" ? "secondary" : "ghost"}
+                  className="flex-1 text-xs sm:flex-none"
+                  onClick={() => setContentOrder("latest")}
+                >
+                  Latest to oldest
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {displayContent.map((item: any, index: number) => (
+                <div
+                  key={item.id}
+                  className="rounded-xl border border-border bg-card/50 p-4"
+                >
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+
+                    <div className="flex min-w-0 flex-1 gap-3">
+
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 font-display text-sm font-bold text-primary">
+                        #
+                        {contentOrder === "performance"
+                          ? item.rank
+                          : index + 1}
+                      </div>
+
+                      <div className="min-w-0">
+
+                        <div className="flex flex-wrap items-center gap-2">
+
+                          <Badge variant="secondary">
+                            {item.format}
+                          </Badge>
+
+                          <Badge variant="outline">
+                            {item.theme}
+                          </Badge>
+
+                          {contentOrder === "latest" &&
+                            item.rank != null && (
+                              <Badge variant="outline">
+                                Performance #{item.rank}
+                              </Badge>
+                            )}
+
+                          {item.publishedAt && (
+                            <span className="text-xs text-muted-foreground">
+                              {new Date(
+                                item.publishedAt,
+                              ).toLocaleDateString()}
+                            </span>
+                          )}
+
+                        </div>
+
+                        <p className="mt-2 line-clamp-2 text-sm font-medium">
+                          {item.caption ||
+                            "Instagram content without caption"}
+                        </p>
+
+                      </div>
+
+                    </div>
+
+                    {item.permalink && (
+                      <Button
+                        asChild
+                        variant="ghost"
+                        size="sm"
+                      >
+                        <a
+                          href={item.permalink}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open
+                          <ExternalLink className="ml-1 h-3.5 w-3.5" />
+                        </a>
+                      </Button>
+                    )}
+
+                  </div>
+
+
+                  <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-5 xl:grid-cols-9">
+
+                    {[
+                      ["Reach", item.reach],
+
+                      [
+                        "Instagram Views",
+                        item.instagramViews,
+                      ],
+
+                      [
+                        "Facebook Views",
+                        item.facebookViews,
+                      ],
+
+                      [
+                        "Total Views",
+                        item.totalViews,
+                      ],
+
+                      ["Likes", item.likes],
+                      ["Comments", item.comments],
+                      ["Shares", item.shares],
+                      ["Saves", item.saves],
+
+                      [
+                        "ER",
+                        item.engagementRate == null
+                          ? "N/A"
+                          : `${item.engagementRate}%`,
+                      ],
+                    ].map(([label, value]) => (
+                      <div key={String(label)}>
+
+                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                          {label}
+                        </p>
+
+                        <p className="mt-0.5 text-sm font-semibold">
+                          {value === null ||
+                            value === undefined
+                            ? "N/A"
+                            : typeof value ===
+                              "number"
+                              ? formatCompact(value)
+                              : value}
+                        </p>
+
+                      </div>
+
+                    ))}
+
+                  </div>
+                  <details className="mt-4 overflow-hidden rounded-lg border border-border">
+                    <summary className="cursor-pointer select-none px-4 py-2.5 text-xs font-medium text-muted-foreground hover:text-foreground">
+                      View Instagram Insight Details
+                    </summary>
+
+                    <div className="border-t border-border px-4 py-4">
+                      <div className="grid gap-5 md:grid-cols-2 xl:grid-cols-5">
+
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold uppercase tracking-wide">
+                            Views
+                          </p>
+                          <InsightRow label="Views" value={item.instagramViews} />
+                          <InsightPercentRow label="Followers" value={item.followerViewPct} />
+                          <InsightPercentRow label="Non-followers" value={item.nonFollowerViewPct} />
+                          <InsightRow label="From Home" value={item.fromHome} />
+                          <InsightRow label="From Other" value={item.fromOther} />
+                          <InsightRow label="From Profile" value={item.fromProfile} />
+                          <InsightRow label="Viewers" value={item.viewers} />
+                        </div>
+
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold uppercase tracking-wide">
+                            Interactions
+                          </p>
+                          <InsightRow label="Interactions" value={item.totalInteractions} />
+                          <InsightPercentRow label="Followers" value={item.followerInteractionPct} />
+                          <InsightPercentRow label="Non-followers" value={item.nonFollowerInteractionPct} />
+                          <InsightRow
+                            label={item.format === "Reel" ? "Reel interactions" : "Post interactions"}
+                            value={item.totalInteractions}
+                          />
+                          <InsightRow label="Likes" value={item.likes} />
+                          <InsightRow label="Comments" value={item.comments} />
+                          <InsightRow label="Saves" value={item.saves} />
+                          <InsightRow label="Shares" value={item.shares} />
+                          <InsightRow label="Accounts engaged" value={item.accountsEngaged} />
+                        </div>
+
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold uppercase tracking-wide">
+                            Profile
+                          </p>
+                          <InsightRow label="Profile activity" value={item.profileActivity} />
+                          <InsightRow label="Profile visits" value={item.profileVisits} />
+                          <InsightRow label="External link taps" value={item.externalLinkTaps} />
+                          <InsightRow label="Business address taps" value={item.businessAddressTaps} />
+                          <InsightRow label="Follows" value={item.follows} />
+                        </div>
+
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold uppercase tracking-wide">
+                            Facebook
+                          </p>
+                          <InsightRow label="Views" value={item.facebookViews} />
+                          <InsightRow label="Reactions" value={item.facebookReactions} />
+                          <InsightRow label="Comments" value={item.facebookComments} />
+                        </div>
+
+                        <div className="space-y-2">
+                          <p className="text-xs font-semibold uppercase tracking-wide">
+                            Reel performance
+                          </p>
+                          {item.format === "Reel" ? (
+                            <>
+                              <InsightRow
+                                label="Skip rate"
+                                value={
+                                  item.reelsSkipRate == null
+                                    ? null
+                                    : Number(
+                                      (
+                                        Math.abs(item.reelsSkipRate) <= 1
+                                          ? item.reelsSkipRate * 100
+                                          : item.reelsSkipRate
+                                      ).toFixed(1),
+                                    )
+                                }
+                                suffix="%"
+                              />
+                              <InsightRow
+                                label="Average watch time"
+                                value={
+                                  item.avgWatchTimeMs == null
+                                    ? null
+                                    : Number((item.avgWatchTimeMs / 1000).toFixed(1))
+                                }
+                                suffix="s"
+                              />
+                            </>
+                          ) : (
+                            <p className="text-xs text-muted-foreground">
+                              Not applicable to this content format.
+                            </p>
+                          )}
+                        </div>
+
+                      </div>
+
+                      <p className="mt-4 text-[11px] text-muted-foreground">
+                        N/A means Meta did not return that exact metric through the API for this media item. Loomic does not substitute or estimate missing Instagram Insight values.
+                      </p>
+                    </div>
+                  </details>
+                </div>
+              ))}
+              {!displayContent.length && <div className="py-10 text-center text-sm text-muted-foreground">No synced Instagram content for this period. Click <b>Sync Instagram</b>.</div>}
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="intelligence" className="space-y-5">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            <MetricInsight icon={Trophy} title="Best day to post" value={intelligence.bestDay?.name ?? "Need more data"} detail={intelligence.bestDay ? `${formatCompact(intelligence.bestDay.avgReach)} avg reach` : "Sync recent content"} />
+            <MetricInsight icon={Clock3} title="Best time to post" value={intelligence.bestTime?.name ?? "Need more data"} detail={intelligence.bestTime ? `${summary?.meta?.timezone ?? "UTC"} · ${formatCompact(intelligence.bestTime.avgReach)} avg reach` : "Based on actual publishing history"} />
+            <MetricInsight icon={Film} title="Best content format" value={intelligence.bestFormat?.name ?? "Need more data"} detail={intelligence.bestFormat ? `${formatCompact(intelligence.bestFormat.avgReach)} avg reach` : "Reel / Post / Carousel"} />
+            <MetricInsight icon={Sparkles} title="Top-performing theme" value={intelligence.topTheme?.name ?? "Need more data"} detail={intelligence.topTheme ? `${formatCompact(intelligence.topTheme.avgReach)} avg reach` : "Caption themes are analysed locally"} />
+            <MetricInsight icon={TrendingDown} title="Weak-performing theme" value={intelligence.weakTheme?.name ?? "Need more data"} detail={intelligence.weakTheme ? `${formatCompact(intelligence.weakTheme.avgReach)} avg reach` : "Requires multiple content themes"} />
+            <MetricInsight icon={UserPlus} title="Follower growth trend" value={`${totals.followerGrowth >= 0 ? "+" : ""}${formatNumber(totals.followerGrowth ?? 0)}`} detail={totals.followerGrowthPct == null ? "Follower history is building" : `${totals.followerGrowthPct >= 0 ? "+" : ""}${totals.followerGrowthPct}% in ${range}`} />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card className="border-border">
+              <CardHeader><CardTitle className="text-base">Content format performance</CardTitle><p className="text-xs text-muted-foreground">Average reach by format from real Instagram media insights.</p></CardHeader>
+              <CardContent>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={intelligence.formatRanking ?? []} margin={{ top: 8, right: 8, left: -8, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                      <XAxis dataKey="name" tick={{ fontSize: 11, fill: "currentColor" }} tickLine={false} axisLine={false} />
+                      <YAxis tick={{ fontSize: 11, fill: "currentColor" }} tickLine={false} axisLine={false} tickFormatter={(value) => formatCompact(value)} />
+                      <Tooltip contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 12, fontSize: 12 }} />
+                      <Bar dataKey="avgReach" name="Average reach" fill="#7c3aed" radius={[6, 6, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card className="border-border">
+              <CardHeader><CardTitle className="text-base">Content recommendations</CardTitle><p className="text-xs text-muted-foreground">Calculated locally from the selected account&apos;s actual Instagram metrics — no paid AI API required.</p></CardHeader>
+              <CardContent className="space-y-3">
+                {(intelligence.recommendations ?? []).map((recommendation: string, index: number) => (
+                  <div key={index} className="flex gap-3 rounded-xl border border-border p-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Sparkles className="h-4 w-4" /></div>
+                    <p className="text-sm text-muted-foreground">{recommendation}</p>
+                  </div>
+                ))}
+              </CardContent>
+            </Card>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="report" className="space-y-5">
+          <InsightsReport
+            summary={summary}
+            clientName={reportClientName}
+            queryString={reportQueryString}
+            storageKey={[
+              pageClientId,
+              range,
+              summary?.from ?? customFrom,
+              summary?.to ?? customTo,
+            ].join(":")}
+          />
+        </TabsContent>
+
+      </Tabs>
+    </div>
+  );
+}
+
+function MetricInsight({ icon: Icon, title, value, detail }: { icon: LucideIcon; title: string; value: string; detail: string }) {
+  return (
+    <Card className="border-border">
+      <CardContent className="p-5">
+        <div className="flex items-start justify-between gap-3">
+          <div><p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</p><p className="mt-2 font-display text-xl font-semibold">{value}</p><p className="mt-1 text-xs text-muted-foreground">{detail}</p></div>
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary"><Icon className="h-4 w-4" /></div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}

@@ -1,0 +1,99 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-socialflow}
+      POSTGRES_USER: ${POSTGRES_USER:-socialflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - socialflow_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-socialflow} -d ${POSTGRES_DB:-socialflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://${POSTGRES_USER:-socialflow}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-socialflow}
+      JWT_SECRET: ${JWT_SECRET}
+      CRON_SECRET: ${CRON_SECRET}
+      TOKEN_ENCRYPTION_KEY: ${TOKEN_ENCRYPTION_KEY}
+      NEXT_PUBLIC_APP_URL: https://${DOMAIN}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+      INSTAGRAM_CLIENT_ID: ${INSTAGRAM_CLIENT_ID:-}
+      INSTAGRAM_CLIENT_SECRET: ${INSTAGRAM_CLIENT_SECRET:-}
+      INSTAGRAM_REDIRECT_URI: https://${DOMAIN}/api/oauth/instagram/callback
+      FACEBOOK_CLIENT_ID: ${FACEBOOK_CLIENT_ID:-}
+      FACEBOOK_CLIENT_SECRET: ${FACEBOOK_CLIENT_SECRET:-}
+      FACEBOOK_REDIRECT_URI: https://${DOMAIN}/api/oauth/facebook/callback
+      THREADS_CLIENT_ID: ${THREADS_CLIENT_ID:-}
+      THREADS_CLIENT_SECRET: ${THREADS_CLIENT_SECRET:-}
+      THREADS_REDIRECT_URI: https://${DOMAIN}/api/oauth/threads/callback
+      LINKEDIN_CLIENT_ID: ${LINKEDIN_CLIENT_ID:-}
+      LINKEDIN_CLIENT_SECRET: ${LINKEDIN_CLIENT_SECRET:-}
+      LINKEDIN_REDIRECT_URI: https://${DOMAIN}/api/oauth/linkedin/callback
+      LINKEDIN_API_VERSION: ${LINKEDIN_API_VERSION:-202607}
+      X_CLIENT_ID: ${X_CLIENT_ID:-}
+      X_CLIENT_SECRET: ${X_CLIENT_SECRET:-}
+      X_REDIRECT_URI: https://${DOMAIN}/api/oauth/twitter/callback
+      PINTEREST_CLIENT_ID: ${PINTEREST_CLIENT_ID:-}
+      PINTEREST_CLIENT_SECRET: ${PINTEREST_CLIENT_SECRET:-}
+      PINTEREST_REDIRECT_URI: https://${DOMAIN}/api/oauth/pinterest/callback
+      META_GRAPH_API_VERSION: ${META_GRAPH_API_VERSION:-v26.0}
+      ALLOW_DEMO_SOCIAL_CONNECTIONS: ${ALLOW_DEMO_SOCIAL_CONNECTIONS:-false}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_FROM: ${EMAIL_FROM:-}
+    volumes:
+      - socialflow_uploads:/app/public/uploads
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  scheduler:
+    image: alpine:3.22
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      CRON_SECRET: ${CRON_SECRET}
+      APP_INTERNAL_URL: http://app:3000
+      PUBLISH_INTERVAL_SECONDS: 10
+      ANALYTICS_EVERY_N_RUNS: 15
+    volumes:
+      - ./scripts/scheduler.sh:/scheduler.sh:ro
+    command: ["sh", "-c", "apk add --no-cache curl >/dev/null && exec /scheduler.sh"]
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile.production:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  socialflow_db:
+  socialflow_uploads:
+  caddy_data:
+  caddy_config:

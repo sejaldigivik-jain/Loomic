@@ -1,0 +1,20 @@
+SOCIALFLOW LOCATION SUGGESTIONS PATCH
+
+1. Stop SocialFlow (Ctrl+C).
+2. Extract this ZIP over your current Final5 project folder.
+3. Choose Replace files in destination.
+4. Open your current .env and add:
+
+   GEOAPIFY_API_KEY="YOUR_GEOAPIFY_KEY"
+
+   Optional for India-only results:
+   LOCATION_SEARCH_COUNTRY_CODE="in"
+
+   Optional Pune bias:
+   LOCATION_SEARCH_BIAS="proximity:73.8567,18.5204"
+
+5. Start again with RUN-SOCIALFLOW.bat.
+6. Composer > Instagram finishing tools > Location.
+7. Type 2+ characters. Suggestions appear automatically.
+
+The patch does NOT overwrite your .env or db/custom.db.

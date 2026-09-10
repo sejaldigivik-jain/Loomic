@@ -1,0 +1,1330 @@
+import { db } from "@/lib/db";
+import { decryptSecret } from "@/lib/secrets";
+
+const IG_GRAPH_VERSION = process.env.META_GRAPH_API_VERSION ?? "v26.0";
+const IG_GRAPH_BASE = `https://graph.instagram.com/${IG_GRAPH_VERSION}`;
+
+interface GraphErrorPayload {
+  error?: { message?: string; type?: string; code?: number; error_subcode?: number };
+}
+
+interface InsightValue {
+  value?: number | string | Record<string, unknown>;
+  end_time?: string;
+}
+
+interface InsightBreakdownResult {
+  dimension_values?: string[];
+  value?: number | string;
+}
+
+interface InsightBreakdown {
+  dimension_keys?: string[];
+  results?: InsightBreakdownResult[];
+}
+
+interface InsightItem {
+  name?: string;
+  values?: InsightValue[];
+  value?: number | string;
+
+  total_value?: {
+    value?: number | string | Record<string, unknown>;
+    breakdowns?: InsightBreakdown[];
+  };
+}
+
+interface InsightPayload extends GraphErrorPayload {
+  data?: InsightItem[];
+}
+
+export interface InstagramAnalyticsSyncResult {
+  accountId: string;
+  handle: string;
+  status: "synced" | "failed" | "skipped";
+  accountDays: number;
+  mediaSynced: number;
+  needsReconnect?: boolean;
+  error?: string;
+}
+
+function numberValue(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function metricValue(payload: InsightPayload, name: string): number {
+  const item = payload?.data?.find((m) => m.name === name);
+  const value = item?.values?.[0]?.value ?? item?.value ?? item?.total_value?.value;
+  return numberValue(value);
+}
+
+function nullableNumber(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
+}
+
+function metricNullable(
+  payload: InsightPayload | null | undefined,
+  name: string,
+): number | null {
+  const item = payload?.data?.find(
+    (metric) => metric.name === name,
+  );
+
+  if (!item) return null;
+
+  const raw =
+    item.values?.[0]?.value ??
+    item.value ??
+    item.total_value?.value;
+
+  return nullableNumber(raw);
+}
+
+async function graphOptional<T>(
+  url: string,
+): Promise<T | null> {
+  try {
+    return await graphJson<T>(url);
+  } catch {
+    return null;
+  }
+}
+
+function dayStart(input: Date | string) {
+  const date = new Date(input);
+  date.setUTCHours(0, 0, 0, 0);
+  return date;
+}
+
+function dayKey(input: Date | string) {
+  return dayStart(input).toISOString().slice(0, 10);
+}
+
+function isInsightsPermissionError(message: string) {
+  return /manage_insights|permission|permissions|oauth|access token|insufficient/i.test(message);
+}
+
+async function graphJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { headers: { Accept: "application/json" } });
+  const text = await res.text();
+  let body: any = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = { raw: text };
+  }
+  if (!res.ok) {
+    const message = body?.error?.message || body?.raw || `Instagram API request failed (${res.status})`;
+    const error = new Error(String(message));
+    (error as any).status = res.status;
+    (error as any).payload = body;
+    throw error;
+  }
+  return body as T;
+}
+
+async function fetchAccountProfile(externalUserId: string, token: string) {
+  const params = new URLSearchParams({
+    fields: "id,username,followers_count,media_count,profile_picture_url",
+    access_token: token,
+  });
+  return graphJson<{
+    id?: string;
+    username?: string;
+    followers_count?: number;
+    media_count?: number;
+    profile_picture_url?: string;
+  }>(`${IG_GRAPH_BASE}/${externalUserId}?${params.toString()}`);
+}
+
+async function fetchAccountInsights(externalUserId: string, token: string, days: number) {
+  const until = Math.floor(Date.now() / 1000);
+  const since = until - Math.min(90, Math.max(7, days)) * 24 * 60 * 60;
+  const metrics = [
+    "reach",
+    "profile_views",
+    "accounts_engaged",
+    "total_interactions",
+    "likes",
+    "comments",
+    "shares",
+    "saves",
+    "views",
+    "follower_count",
+  ];
+
+  const params = new URLSearchParams({
+    metric: metrics.join(","),
+    period: "day",
+    since: String(since),
+    until: String(until),
+    access_token: token,
+  });
+
+  try {
+    return await graphJson<InsightPayload>(`${IG_GRAPH_BASE}/${externalUserId}/insights?${params.toString()}`);
+  } catch (groupError) {
+    // Meta occasionally changes which metrics can be combined. Preserve useful
+    // data by retrying metrics individually instead of failing the whole sync.
+    const data: InsightItem[] = [];
+    let firstError: Error | null = groupError instanceof Error ? groupError : new Error("Instagram insights request failed");
+    for (const metric of metrics) {
+      const single = new URLSearchParams({
+        metric,
+        period: "day",
+        since: String(since),
+        until: String(until),
+        access_token: token,
+      });
+      try {
+        const response = await graphJson<InsightPayload>(`${IG_GRAPH_BASE}/${externalUserId}/insights?${single.toString()}`);
+        if (response.data?.length) data.push(...response.data);
+      } catch (error) {
+        if (!firstError && error instanceof Error) firstError = error;
+      }
+    }
+    if (!data.length) throw firstError ?? new Error("Instagram did not return account insights");
+    return { data } satisfies InsightPayload;
+  }
+}
+
+function insightSeries(payload: InsightPayload) {
+  const days = new Map<string, Record<string, number>>();
+  for (const metric of payload.data ?? []) {
+    if (!metric.name) continue;
+    for (const point of metric.values ?? []) {
+      if (!point.end_time) continue;
+      const key = dayKey(point.end_time);
+      const bucket = days.get(key) ?? {};
+      bucket[metric.name] = numberValue(point.value);
+      days.set(key, bucket);
+    }
+  }
+  return days;
+}
+
+interface InstagramMediaRow {
+  id: string;
+  caption?: string;
+  media_type?: string;
+  media_product_type?: string;
+  permalink?: string;
+  timestamp?: string;
+  thumbnail_url?: string;
+  media_url?: string;
+  like_count?: number;
+  comments_count?: number;
+}
+
+async function fetchOwnedMedia(
+  externalUserId: string,
+  token: string,
+  maxMedia = 60,
+  mediaSince?: Date,
+  mediaUntil?: Date,
+) {
+  const fields = [
+    "id",
+    "caption",
+    "media_type",
+    "media_product_type",
+    "permalink",
+    "timestamp",
+    "thumbnail_url",
+    "media_url",
+    "like_count",
+    "comments_count",
+  ].join(",");
+  const collected: InstagramMediaRow[] = [];
+  let next: string | undefined = `${IG_GRAPH_BASE}/${externalUserId}/media?${new URLSearchParams({ fields, limit: "50", access_token: token }).toString()}`;
+
+  while (next && collected.length < maxMedia) {
+    const page: { data?: InstagramMediaRow[]; paging?: { next?: string } } = await graphJson(next);
+    const rows = page.data ?? [];
+    collected.push(...rows);
+
+    if (mediaSince && rows.some((row) => {
+      if (!row.timestamp) return false;
+      const published = new Date(row.timestamp);
+      return !Number.isNaN(published.getTime()) && published.getTime() <= mediaSince.getTime();
+    })) {
+      break;
+    }
+
+    next = page.paging?.next;
+  }
+  return collected
+    .filter((row) => {
+      if (!row.timestamp) return !mediaSince && !mediaUntil;
+      const published = new Date(row.timestamp);
+      if (Number.isNaN(published.getTime())) return false;
+      if (mediaSince && published.getTime() < mediaSince.getTime()) return false;
+      if (mediaUntil && published.getTime() > mediaUntil.getTime()) return false;
+      return true;
+    })
+    .slice(0, maxMedia);
+}
+
+async function fetchMediaMetricGroup(
+  mediaId: string,
+  token: string,
+  metrics: string[],
+) {
+  if (!metrics.length) {
+    return { data: [] } satisfies InsightPayload;
+  }
+
+  const params = new URLSearchParams({
+    metric: metrics.join(","),
+    access_token: token,
+  });
+
+  try {
+    return await graphJson<InsightPayload>(
+      `${IG_GRAPH_BASE}/${mediaId}/insights?${params.toString()}`,
+    );
+  } catch {
+    /*
+     * One unsupported metric can make a grouped request fail.
+     * Retry individually so valid metrics are not lost.
+     */
+    const data: InsightItem[] = [];
+
+    for (const metric of metrics) {
+      const single = new URLSearchParams({
+        metric,
+        access_token: token,
+      });
+
+      const response =
+        await graphOptional<InsightPayload>(
+          `${IG_GRAPH_BASE}/${mediaId}/insights?${single.toString()}`,
+        );
+
+      if (response?.data?.length) {
+        data.push(...response.data);
+      }
+    }
+
+    return {
+      data,
+    } satisfies InsightPayload;
+  }
+}
+
+async function fetchMediaBreakdown(
+  mediaId: string,
+  token: string,
+  metric: string,
+  breakdown: string,
+): Promise<InsightPayload | null> {
+  const params = new URLSearchParams({
+    metric,
+    metric_type: "total_value",
+    breakdown,
+    access_token: token,
+  });
+
+  return graphOptional<InsightPayload>(
+    `${IG_GRAPH_BASE}/${mediaId}/insights?${params.toString()}`,
+  );
+}
+
+type MediaBreakdownEntry = {
+  key: string;
+  value: number;
+};
+
+function normalizeBreakdownKey(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+}
+
+function breakdownEntries(
+  payload: InsightPayload | null | undefined,
+  metricName: string,
+): MediaBreakdownEntry[] {
+  const item =
+    payload?.data?.find(
+      (metric) => metric.name === metricName,
+    );
+
+  if (!item) return [];
+
+  const entries: MediaBreakdownEntry[] = [];
+
+  for (
+    const breakdown of
+    item.total_value?.breakdowns ?? []
+  ) {
+    for (const row of breakdown.results ?? []) {
+      const rawKey =
+        row.dimension_values?.[0];
+
+      const number =
+        nullableNumber(row.value);
+
+      if (!rawKey || number === null) {
+        continue;
+      }
+
+      entries.push({
+        key: normalizeBreakdownKey(rawKey),
+        value: number,
+      });
+    }
+  }
+
+  return entries;
+}
+
+function findBreakdownValue(
+  entries: MediaBreakdownEntry[],
+  names: string[],
+): number | null {
+  const wanted =
+    names.map(normalizeBreakdownKey);
+
+  const matches =
+    entries.filter((entry) =>
+      wanted.includes(entry.key),
+    );
+
+  if (!matches.length) return null;
+
+  return matches.reduce(
+    (total, row) => total + row.value,
+    0,
+  );
+}
+
+async function fetchMediaInsights(
+  mediaId: string,
+  token: string,
+  isReel: boolean,
+) {
+  /*
+   * Main Instagram media metrics.
+   *
+   * fetchMediaMetricGroup() already retries metrics
+   * individually if Meta rejects a grouped request.
+   */
+  const corePayload =
+    await fetchMediaMetricGroup(
+      mediaId,
+      token,
+      [
+        "reach",
+        "views",
+
+        "likes",
+        "comments",
+        "saved",
+        "shares",
+        "total_interactions",
+
+        "profile_activity",
+        "profile_visits",
+        "follows",
+      ],
+    );
+
+  /*
+   * Facebook / crossposted views.
+   */
+  const facebookPayload =
+    await fetchMediaMetricGroup(
+      mediaId,
+      token,
+      [
+        "facebook_views",
+        "crossposted_views",
+      ],
+    );
+
+  /*
+   * Reel-only metrics.
+   */
+  const reelPayload =
+    isReel
+      ? await fetchMediaMetricGroup(
+        mediaId,
+        token,
+        [
+          "reels_skip_rate",
+          "ig_reels_avg_watch_time",
+          "ig_reels_video_view_total_time",
+        ],
+      )
+      : ({ data: [] } satisfies InsightPayload);
+
+  /*
+   * Optional Meta breakdowns.
+   *
+   * If the selected media/account does not expose one
+   * of these, graphOptional() returns null.
+   */
+  const [
+    viewFollowerPayload,
+    interactionFollowerPayload,
+    viewSurfacePayload,
+    profileActionPayload,
+  ] = await Promise.all([
+    fetchMediaBreakdown(
+      mediaId,
+      token,
+      "views",
+      "follow_type",
+    ),
+
+    fetchMediaBreakdown(
+      mediaId,
+      token,
+      "total_interactions",
+      "follow_type",
+    ),
+
+    fetchMediaBreakdown(
+      mediaId,
+      token,
+      "views",
+      "surface_type",
+    ),
+
+    fetchMediaBreakdown(
+      mediaId,
+      token,
+      "profile_activity",
+      "action_type",
+    ),
+  ]);
+
+  const metaReach =
+    metricNullable(
+      corePayload,
+      "reach",
+    );
+
+  const metaViews =
+    metricNullable(
+      corePayload,
+      "views",
+    );
+
+  const directFacebookViews =
+    metricNullable(
+      facebookPayload,
+      "facebook_views",
+    );
+
+  const metaCrosspostedViews =
+    metricNullable(
+      facebookPayload,
+      "crossposted_views",
+    );
+
+  /*
+   * Facebook Views:
+   *
+   * 1. Use facebook_views directly.
+   * 2. Otherwise derive Facebook portion from the
+   *    crossposted total when both values exist.
+   */
+  const metaFacebookViews =
+    directFacebookViews ??
+    (
+      metaCrosspostedViews !== null &&
+        metaViews !== null
+        ? Math.max(
+          0,
+          metaCrosspostedViews -
+          metaViews,
+        )
+        : null
+    );
+
+  /*
+   * Your required SocialFlow calculation:
+   *
+   * Instagram Views + Facebook Views = Total Views
+   */
+  const metaDisplayViews =
+    metaViews === null &&
+      metaFacebookViews === null
+      ? null
+      : (metaViews ?? 0) +
+      (metaFacebookViews ?? 0);
+
+  const metaLikes =
+    metricNullable(
+      corePayload,
+      "likes",
+    );
+
+  const metaComments =
+    metricNullable(
+      corePayload,
+      "comments",
+    );
+
+  const metaShares =
+    metricNullable(
+      corePayload,
+      "shares",
+    );
+
+  const metaSaves =
+    metricNullable(
+      corePayload,
+      "saved",
+    );
+
+  const metaTotalInteractions =
+    metricNullable(
+      corePayload,
+      "total_interactions",
+    );
+
+  const metaProfileActivity =
+    metricNullable(
+      corePayload,
+      "profile_activity",
+    );
+
+  const metaProfileVisits =
+    metricNullable(
+      corePayload,
+      "profile_visits",
+    );
+
+  const metaFollows =
+    metricNullable(
+      corePayload,
+      "follows",
+    );
+
+  /*
+   * FOLLOWER / NON-FOLLOWER VIEW BREAKDOWN
+   */
+  const viewFollowerEntries =
+    breakdownEntries(
+      viewFollowerPayload,
+      "views",
+    );
+
+  const metaFollowerViews =
+    findBreakdownValue(
+      viewFollowerEntries,
+      [
+        "follower",
+        "followers",
+      ],
+    );
+
+  const metaNonFollowerViews =
+    findBreakdownValue(
+      viewFollowerEntries,
+      [
+        "non_follower",
+        "non_followers",
+        "nonfollower",
+        "nonfollowers",
+      ],
+    );
+
+  /*
+   * FOLLOWER / NON-FOLLOWER INTERACTION BREAKDOWN
+   */
+  const interactionEntries =
+    breakdownEntries(
+      interactionFollowerPayload,
+      "total_interactions",
+    );
+
+  const metaFollowerInteractions =
+    findBreakdownValue(
+      interactionEntries,
+      [
+        "follower",
+        "followers",
+      ],
+    );
+
+  const metaNonFollowerInteractions =
+    findBreakdownValue(
+      interactionEntries,
+      [
+        "non_follower",
+        "non_followers",
+        "nonfollower",
+        "nonfollowers",
+      ],
+    );
+
+  /*
+   * VIEW SOURCE BREAKDOWN
+   */
+  const surfaceEntries =
+    breakdownEntries(
+      viewSurfacePayload,
+      "views",
+    );
+
+  const metaFromHome =
+    findBreakdownValue(
+      surfaceEntries,
+      ["home"],
+    );
+
+  const metaFromProfile =
+    findBreakdownValue(
+      surfaceEntries,
+      ["profile"],
+    );
+
+  let metaFromOther: number | null = null;
+
+  if (surfaceEntries.length) {
+    metaFromOther =
+      surfaceEntries
+        .filter(
+          (entry) =>
+            entry.key !== "home" &&
+            entry.key !== "profile",
+        )
+        .reduce(
+          (total, entry) =>
+            total + entry.value,
+          0,
+        );
+  }
+
+  /*
+   * PROFILE ACTIVITY BREAKDOWN
+   */
+  const profileActions =
+    breakdownEntries(
+      profileActionPayload,
+      "profile_activity",
+    );
+
+  const metaExternalLinkTaps =
+    findBreakdownValue(
+      profileActions,
+      [
+        "external_link_tap",
+        "external_link_taps",
+        "link_click",
+        "link_clicks",
+        "website_click",
+        "website_clicks",
+      ],
+    );
+
+  const metaBusinessAddressTaps =
+    findBreakdownValue(
+      profileActions,
+      [
+        "business_address_tap",
+        "business_address_taps",
+        "address_tap",
+        "address_taps",
+        "directions",
+        "get_directions",
+      ],
+    );
+
+  return {
+    metaReach,
+
+    metaViews,
+    metaTotalViews: null,
+    metaDisplayViews,
+
+    metaFacebookViews,
+    metaCrosspostedViews,
+
+    metaLikes,
+    metaTotalLikes: null,
+
+    metaComments,
+    metaTotalComments: null,
+
+    metaShares,
+    metaSaves,
+    metaTotalInteractions,
+
+    /*
+     * There is no reliable separate media-level
+     * Accounts Engaged field in the current public
+     * Media Insights metric list.
+     */
+    metaAccountsEngaged: null,
+
+    metaProfileActivity,
+    metaProfileVisits,
+    metaFollows,
+
+    metaFollowerViews,
+    metaNonFollowerViews,
+
+    metaFollowerInteractions,
+    metaNonFollowerInteractions,
+
+    metaFromHome,
+    metaFromProfile,
+    metaFromOther,
+
+    metaExternalLinkTaps,
+    metaBusinessAddressTaps,
+
+    metaReelsSkipRate:
+      metricNullable(
+        reelPayload,
+        "reels_skip_rate",
+      ),
+
+    avgWatchTimeMs:
+      metricNullable(
+        reelPayload,
+        "ig_reels_avg_watch_time",
+      ),
+
+    totalWatchTimeMs:
+      metricNullable(
+        reelPayload,
+        "ig_reels_video_view_total_time",
+      ),
+  };
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, worker: (item: T) => Promise<R>) {
+  const results: R[] = [];
+  let index = 0;
+  const run = async () => {
+    while (true) {
+      const current = index++;
+      if (current >= items.length) return;
+      results[current] = await worker(items[current]);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, run));
+  return results;
+}
+
+export async function syncInstagramAccountAnalytics(
+  accountId: string,
+  days = 90,
+  maxMedia = 60,
+  mediaSince?: Date,
+  mediaUntil?: Date,
+): Promise<InstagramAnalyticsSyncResult> {
+  const account = await db.socialAccount.findUnique({ where: { id: accountId } });
+  if (!account || account.platform !== "instagram") {
+    return { accountId, handle: account?.handle ?? "Instagram", status: "skipped", accountDays: 0, mediaSynced: 0, error: "Instagram account not found" };
+  }
+  if (account.status !== "connected" || account.accessToken === "demo-token" || !account.externalUserId) {
+    return { accountId, handle: account.handle, status: "skipped", accountDays: 0, mediaSynced: 0, error: "Instagram account is not connected with a real access token" };
+  }
+
+  try {
+    const token = decryptSecret(account.accessToken);
+    const [profile, accountInsights, media] = await Promise.all([
+      fetchAccountProfile(account.externalUserId, token),
+      fetchAccountInsights(account.externalUserId, token, days),
+      fetchOwnedMedia(account.externalUserId, token, maxMedia, mediaSince, mediaUntil),
+    ]);
+
+    const today = dayStart(new Date());
+    const series = insightSeries(accountInsights);
+    let accountDays = 0;
+    for (const [dateString, values] of series.entries()) {
+      const date = dayStart(dateString);
+      await db.accountAnalyticsSnapshot.upsert({
+        where: { socialAccountId_date: { socialAccountId: account.id, date } },
+        update: {
+          newFollowers: values.follower_count ?? 0,
+          reach: values.reach ?? 0,
+          profileViews: values.profile_views ?? 0,
+          accountsEngaged: values.accounts_engaged ?? 0,
+          totalInteractions: values.total_interactions ?? 0,
+          likes: values.likes ?? 0,
+          comments: values.comments ?? 0,
+          shares: values.shares ?? 0,
+          saves: values.saves ?? 0,
+          views: values.views ?? 0,
+          syncedAt: new Date(),
+        },
+        create: {
+          socialAccountId: account.id,
+          date,
+          newFollowers: values.follower_count ?? 0,
+          reach: values.reach ?? 0,
+          profileViews: values.profile_views ?? 0,
+          accountsEngaged: values.accounts_engaged ?? 0,
+          totalInteractions: values.total_interactions ?? 0,
+          likes: values.likes ?? 0,
+          comments: values.comments ?? 0,
+          shares: values.shares ?? 0,
+          saves: values.saves ?? 0,
+          views: values.views ?? 0,
+          syncedAt: new Date(),
+        },
+      });
+      accountDays += 1;
+    }
+
+    // Store the observed point-in-time follower total separately from Meta's
+    // daily follower_count metric (which represents new followers for a day).
+    await db.accountAnalyticsSnapshot.upsert({
+      where: { socialAccountId_date: { socialAccountId: account.id, date: today } },
+      update: { followers: numberValue(profile.followers_count), syncedAt: new Date() },
+      create: {
+        socialAccountId: account.id,
+        date: today,
+        followers: numberValue(profile.followers_count),
+        syncedAt: new Date(),
+      },
+    });
+
+    await db.socialAccount.update({
+      where: { id: account.id },
+      data: {
+        followers: numberValue(profile.followers_count),
+        avatarUrl: profile.profile_picture_url ?? account.avatarUrl,
+        status: "connected",
+      },
+    });
+
+    let mediaSynced = 0;
+
+    await mapWithConcurrency(media, 2, async (item) => {
+      const isReel =
+        (item.media_product_type ?? "").toUpperCase() === "REELS";
+
+      const insights = await fetchMediaInsights(
+        item.id,
+        token,
+        isReel,
+      );
+
+      const fallbackLikes =
+        numberValue(item.like_count);
+
+      const fallbackComments =
+        numberValue(item.comments_count);
+
+      const likes =
+        insights.metaTotalLikes ??
+        insights.metaLikes ??
+        fallbackLikes;
+
+      const comments =
+        insights.metaTotalComments ??
+        insights.metaComments ??
+        fallbackComments;
+
+      const shares =
+        insights.metaShares ?? 0;
+
+      const saves =
+        insights.metaSaves ?? 0;
+
+      const totalInteractions =
+        insights.metaTotalInteractions ??
+        (
+          likes +
+          comments +
+          shares +
+          saves
+        );
+
+      const legacyReach =
+        insights.metaReach ?? 0;
+
+      const legacyViews =
+        insights.metaDisplayViews ??
+        insights.metaViews ??
+        0;
+
+      const engagementRate =
+        legacyReach > 0
+          ? (
+            totalInteractions /
+            legacyReach
+          ) * 100
+          : 0;
+
+      const publishedAt =
+        item.timestamp
+          ? new Date(item.timestamp)
+          : null;
+
+      /*
+       * Store both legacy SocialFlow fields and the
+       * exact nullable Meta insight values.
+       */
+      await db.instagramMediaInsight.upsert({
+        where: {
+          socialAccountId_externalMediaId: {
+            socialAccountId: account.id,
+            externalMediaId: item.id,
+          },
+        },
+
+        update: {
+          caption: item.caption ?? null,
+          mediaType: item.media_type ?? null,
+          mediaProductType:
+            item.media_product_type ?? null,
+          permalink: item.permalink ?? null,
+          thumbnailUrl:
+            item.thumbnail_url ??
+            item.media_url ??
+            null,
+          publishedAt,
+
+          /*
+           * Existing SocialFlow fields.
+           */
+          reach: legacyReach,
+          views: legacyViews,
+          likes,
+          comments,
+          shares,
+          saves,
+          totalInteractions,
+          engagementRate,
+
+          avgWatchTimeMs:
+            insights.avgWatchTimeMs,
+
+          totalWatchTimeMs:
+            insights.totalWatchTimeMs,
+
+          /*
+           * Exact Meta fields.
+           * null means Meta did not return that metric.
+           */
+          metaReach:
+            insights.metaReach,
+
+          metaViews:
+            insights.metaViews,
+
+          metaTotalViews:
+            insights.metaTotalViews,
+
+          metaDisplayViews:
+            insights.metaDisplayViews,
+
+          metaFacebookViews:
+            insights.metaFacebookViews,
+
+          metaCrosspostedViews:
+            insights.metaCrosspostedViews,
+
+          metaLikes:
+            insights.metaLikes,
+
+          metaTotalLikes:
+            insights.metaTotalLikes,
+
+          metaComments:
+            insights.metaComments,
+
+          metaTotalComments:
+            insights.metaTotalComments,
+
+          metaShares:
+            insights.metaShares,
+
+          metaSaves:
+            insights.metaSaves,
+
+          metaTotalInteractions:
+            insights.metaTotalInteractions,
+
+          metaAccountsEngaged:
+            insights.metaAccountsEngaged,
+
+          metaProfileActivity:
+            insights.metaProfileActivity,
+
+          metaProfileVisits:
+            insights.metaProfileVisits,
+
+          metaFollows:
+            insights.metaFollows,
+
+          metaFollowerViews:
+            insights.metaFollowerViews,
+
+          metaNonFollowerViews:
+            insights.metaNonFollowerViews,
+
+          metaFollowerInteractions:
+            insights.metaFollowerInteractions,
+
+          metaNonFollowerInteractions:
+            insights.metaNonFollowerInteractions,
+
+          metaFromHome:
+            insights.metaFromHome,
+
+          metaFromProfile:
+            insights.metaFromProfile,
+
+          metaFromOther:
+            insights.metaFromOther,
+
+          metaExternalLinkTaps:
+            insights.metaExternalLinkTaps,
+
+          metaBusinessAddressTaps:
+            insights.metaBusinessAddressTaps,
+
+          metaReelsSkipRate:
+            insights.metaReelsSkipRate,
+
+          syncedAt: new Date(),
+        },
+
+        create: {
+          socialAccountId: account.id,
+          externalMediaId: item.id,
+
+          caption: item.caption ?? null,
+          mediaType: item.media_type ?? null,
+          mediaProductType:
+            item.media_product_type ?? null,
+          permalink: item.permalink ?? null,
+          thumbnailUrl:
+            item.thumbnail_url ??
+            item.media_url ??
+            null,
+          publishedAt,
+
+          /*
+           * Existing SocialFlow fields.
+           */
+          reach: legacyReach,
+          views: legacyViews,
+          likes,
+          comments,
+          shares,
+          saves,
+          totalInteractions,
+          engagementRate,
+
+          avgWatchTimeMs:
+            insights.avgWatchTimeMs,
+
+          totalWatchTimeMs:
+            insights.totalWatchTimeMs,
+
+          /*
+           * Exact Meta fields.
+           */
+          metaReach:
+            insights.metaReach,
+
+          metaViews:
+            insights.metaViews,
+
+          metaTotalViews:
+            insights.metaTotalViews,
+
+          metaDisplayViews:
+            insights.metaDisplayViews,
+
+          metaFacebookViews:
+            insights.metaFacebookViews,
+
+          metaCrosspostedViews:
+            insights.metaCrosspostedViews,
+
+          metaLikes:
+            insights.metaLikes,
+
+          metaTotalLikes:
+            insights.metaTotalLikes,
+
+          metaComments:
+            insights.metaComments,
+
+          metaTotalComments:
+            insights.metaTotalComments,
+
+          metaShares:
+            insights.metaShares,
+
+          metaSaves:
+            insights.metaSaves,
+
+          metaTotalInteractions:
+            insights.metaTotalInteractions,
+
+          metaAccountsEngaged:
+            insights.metaAccountsEngaged,
+
+          metaProfileActivity:
+            insights.metaProfileActivity,
+
+          metaProfileVisits:
+            insights.metaProfileVisits,
+
+          metaFollows:
+            insights.metaFollows,
+
+          metaFollowerViews:
+            insights.metaFollowerViews,
+
+          metaNonFollowerViews:
+            insights.metaNonFollowerViews,
+
+          metaFollowerInteractions:
+            insights.metaFollowerInteractions,
+
+          metaNonFollowerInteractions:
+            insights.metaNonFollowerInteractions,
+
+          metaFromHome:
+            insights.metaFromHome,
+
+          metaFromProfile:
+            insights.metaFromProfile,
+
+          metaFromOther:
+            insights.metaFromOther,
+
+          metaExternalLinkTaps:
+            insights.metaExternalLinkTaps,
+
+          metaBusinessAddressTaps:
+            insights.metaBusinessAddressTaps,
+
+          metaReelsSkipRate:
+            insights.metaReelsSkipRate,
+
+          syncedAt: new Date(),
+        },
+      });
+
+      /*
+       * Keep legacy Analytics rows working for media that
+       * was originally published through SocialFlow.
+       */
+      const target =
+        await db.postTarget.findFirst({
+          where: {
+            socialAccountId: account.id,
+            externalId: item.id,
+          },
+          select: {
+            postId: true,
+          },
+        });
+
+      if (target) {
+        await db.analytics.upsert({
+          where: {
+            postId_socialAccountId_date: {
+              postId: target.postId,
+              socialAccountId: account.id,
+              date: today,
+            },
+          },
+
+          update: {
+            reach: legacyReach,
+            impressions: legacyViews,
+            likes,
+            comments,
+            shares,
+            saves,
+            engagementRate,
+          },
+
+          create: {
+            postId: target.postId,
+            socialAccountId: account.id,
+            date: today,
+            reach: legacyReach,
+            impressions: legacyViews,
+            likes,
+            comments,
+            shares,
+            saves,
+            engagementRate,
+          },
+        });
+      }
+
+      /*
+       * IMPORTANT:
+       * This must stay INSIDE the mapWithConcurrency callback.
+       */
+      mediaSynced += 1;
+    });
+
+    return {
+      accountId: account.id,
+      handle: account.handle,
+      status: "synced",
+      accountDays,
+      mediaSynced,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Instagram analytics sync failed";
+    return {
+      accountId: account.id,
+      handle: account.handle,
+      status: "failed",
+      accountDays: 0,
+      mediaSynced: 0,
+      needsReconnect: isInsightsPermissionError(message),
+      error: message,
+    };
+  }
+}
+
+/**
+ * Backward-compatible cron entry point. It now syncs real account insights and
+ * all recent Instagram-owned media, not only posts created inside SocialFlow.
+ */
+export async function syncInstagramAnalytics(limit = 100, accountId?: string) {
+  const accounts = await db.socialAccount.findMany({
+    where: {
+      ...(accountId ? { id: accountId } : {}),
+      platform: "instagram",
+      status: "connected",
+      accessToken: { not: "demo-token" },
+      externalUserId: { not: null },
+    },
+    select: { id: true },
+    take: accountId ? 1 : Math.max(1, Math.min(25, limit)),
+  });
+
+  const results: InstagramAnalyticsSyncResult[] = [];
+  for (const account of accounts) {
+    results.push(await syncInstagramAccountAnalytics(account.id, 90, 60));
+  }
+  return results;
+}
