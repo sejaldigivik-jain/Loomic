@@ -12,7 +12,7 @@
  * reachable. The old Cloudflare-tunnel URLs changed on every restart, which is
  * why publish-service.ts still rebases legacy `/uploads/*` links.
  */
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { StorageClient } from "@supabase/storage-js";
 
 export const STORAGE_BUCKET = process.env.SUPABASE_STORAGE_BUCKET ?? "media";
 
@@ -39,7 +39,7 @@ export const MAX_VIDEO_UPLOAD_MB = Math.max(
 export const MAX_IMAGE_SIZE = MAX_IMAGE_UPLOAD_MB * 1024 * 1024;
 export const MAX_VIDEO_SIZE = MAX_VIDEO_UPLOAD_MB * 1024 * 1024;
 
-let cachedAdminClient: SupabaseClient | null = null;
+let cachedAdminClient: StorageClient | null = null;
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -53,25 +53,30 @@ function requiredEnv(name: string): string {
 }
 
 /**
- * Server-only Supabase client using the service role key. The service role key
- * bypasses row level security, so it must never be imported into a client
- * component or prefixed with NEXT_PUBLIC_.
+ * Server-only Storage client using the service role key, which bypasses row
+ * level security -- it must never be imported into a client component or
+ * prefixed with NEXT_PUBLIC_.
+ *
+ * We use @supabase/storage-js rather than the full @supabase/supabase-js on
+ * purpose: the umbrella client also constructs a realtime/WebSocket client,
+ * which throws on Node 20 and pulls in code this app never uses.
  */
-export function storageAdmin(): SupabaseClient {
+export function storageAdmin(): StorageClient {
   if (cachedAdminClient) return cachedAdminClient;
 
-  const url = requiredEnv("NEXT_PUBLIC_SUPABASE_URL");
+  const url = requiredEnv("NEXT_PUBLIC_SUPABASE_URL").replace(/\/$/, "");
   const serviceRoleKey = requiredEnv("SUPABASE_SERVICE_ROLE_KEY");
 
-  cachedAdminClient = createClient(url, serviceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
+  cachedAdminClient = new StorageClient(`${url}/storage/v1`, {
+    apikey: serviceRoleKey,
+    Authorization: `Bearer ${serviceRoleKey}`,
   });
   return cachedAdminClient;
 }
 
 /** Public URL for an object already stored in the media bucket. */
 export function publicUrlFor(objectPath: string): string {
-  const { data } = storageAdmin().storage.from(STORAGE_BUCKET).getPublicUrl(objectPath);
+  const { data } = storageAdmin().from(STORAGE_BUCKET).getPublicUrl(objectPath);
   return data.publicUrl;
 }
 
@@ -91,7 +96,7 @@ export async function uploadBuffer(
   contentType: string
 ): Promise<string> {
   const { error } = await storageAdmin()
-    .storage.from(STORAGE_BUCKET)
+    .from(STORAGE_BUCKET)
     .upload(objectPath, body, {
       contentType,
       // Object names are UUIDs, so a collision means a retry of the same file.
@@ -116,7 +121,7 @@ export async function createSignedUpload(objectPath: string): Promise<{
   publicUrl: string;
 }> {
   const { data, error } = await storageAdmin()
-    .storage.from(STORAGE_BUCKET)
+    .from(STORAGE_BUCKET)
     .createSignedUploadUrl(objectPath);
 
   if (error || !data) {

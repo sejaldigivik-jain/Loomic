@@ -9,7 +9,7 @@
  *
  * Requires NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.
  */
-import { createClient } from "@supabase/supabase-js";
+import { StorageClient } from "@supabase/storage-js";
 import { readFileSync } from "node:fs";
 
 // Minimal .env reader so the script runs without extra dependencies.
@@ -41,11 +41,14 @@ if (!url || !serviceRoleKey) {
   process.exit(1);
 }
 
-const supabase = createClient(url, serviceRoleKey, {
-  auth: { persistSession: false, autoRefreshToken: false },
+// storage-js directly, not supabase-js: the umbrella client also builds a
+// realtime/WebSocket client, which throws on Node 20.
+const storage = new StorageClient(`${url.replace(/\/$/, "")}/storage/v1`, {
+  apikey: serviceRoleKey,
+  Authorization: `Bearer ${serviceRoleKey}`,
 });
 
-const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+const { data: buckets, error: listError } = await storage.listBuckets();
 if (listError) {
   console.error(`Could not reach Supabase Storage: ${listError.message}`);
   process.exit(1);
@@ -56,7 +59,7 @@ const existing = buckets.find((entry) => entry.name === bucket);
 if (existing) {
   console.log(`Bucket "${bucket}" already exists (public: ${existing.public}).`);
   if (!existing.public) {
-    const { error } = await supabase.storage.updateBucket(bucket, { public: true });
+    const { error } = await storage.updateBucket(bucket, { public: true });
     if (error) {
       console.error(`Could not make the bucket public: ${error.message}`);
       process.exit(1);
@@ -64,7 +67,7 @@ if (existing) {
     console.log(`Bucket "${bucket}" is now public.`);
   }
 } else {
-  const { error } = await supabase.storage.createBucket(bucket, {
+  const { error } = await storage.createBucket(bucket, {
     public: true,
     fileSizeLimit: `${maxVideoMb}MB`,
     allowedMimeTypes: ["image/jpeg", "image/png", "image/webp", "video/mp4", "video/quicktime"],
