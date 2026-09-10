@@ -1,0 +1,73 @@
+# SocialFlow scheduled publishing.
+#
+# Vercel's serverless platform has no always-on process, so the embedded
+# scheduler (src/lib/embedded-scheduler.ts) cannot run in production. This
+# workflow calls the same job endpoints on a timer instead. It is free on
+# GitHub-hosted runners for public repos and uses included minutes on private
+# ones (each run is a single curl, so the cost is negligible).
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   APP_URL      e.g. https://your-app.vercel.app   (no trailing slash)
+#   CRON_SECRET  the same value set in Vercel's environment variables
+#
+# NOTE: GitHub's shortest cron interval is 5 minutes, and scheduled runs are
+# queued on a best-effort basis, so publishing can lag by a few minutes under
+# load. If you need tighter timing, point cron-job.org at the same endpoints
+# (it allows 1-minute intervals) or move to Vercel Pro cron.
+name: SocialFlow scheduler
+
+on:
+  schedule:
+    # Publish due posts every 5 minutes.
+    - cron: "*/5 * * * *"
+    # Refresh analytics hourly.
+    - cron: "17 * * * *"
+  # Allows a manual run from the Actions tab for testing.
+  workflow_dispatch:
+
+jobs:
+  publish-due:
+    # Skip on the hourly analytics trigger.
+    if: github.event.schedule != '17 * * * *'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish scheduled posts
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "APP_URL or CRON_SECRET secret is not set."
+            exit 1
+          fi
+          status=$(curl -sS -o response.json -w '%{http_code}' \
+            -X POST "$APP_URL/api/v1/jobs/publish-due" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            --max-time 120)
+          echo "HTTP $status"
+          cat response.json
+          echo
+          # A non-2xx response means the scheduler is broken; fail loudly.
+          [ "$status" -ge 200 ] && [ "$status" -lt 300 ]
+
+  sync-analytics:
+    if: github.event.schedule == '17 * * * *' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Sync analytics
+        env:
+          APP_URL: ${{ secrets.APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "APP_URL or CRON_SECRET secret is not set."
+            exit 1
+          fi
+          status=$(curl -sS -o response.json -w '%{http_code}' \
+            -X POST "$APP_URL/api/v1/jobs/sync-analytics" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            --max-time 120)
+          echo "HTTP $status"
+          cat response.json
+          echo
+          [ "$status" -ge 200 ] && [ "$status" -lt 300 ]

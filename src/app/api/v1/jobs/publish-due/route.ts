@@ -3,6 +3,9 @@ import { publishDuePosts } from "@/lib/publish-service";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+// Publishing waits on Meta's media processing, so give the function the most
+// wall-clock time the Vercel plan allows (Hobby caps at 60s).
+export const maxDuration = 60;
 
 function authorized(req: Request) {
   const secret = process.env.CRON_SECRET;

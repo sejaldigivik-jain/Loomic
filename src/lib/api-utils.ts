@@ -78,7 +78,15 @@ export class ApiError extends Error {
 /*  Handler wrapper — eliminates try/catch boilerplate in every route         */
 /* -------------------------------------------------------------------------- */
 
-type Handler = (req: Request, ctx: { params: Record<string, string | string[]> }) => Promise<Response> | Response;
+/**
+ * The signature Next.js 16 expects from an exported route handler: `params`
+ * arrives as a Promise. The wrapper below awaits it, so individual routes keep
+ * using the plain `ctx.params.id` shape.
+ */
+type Handler = (
+  req: Request,
+  ctx: { params: Promise<Record<string, string | string[]>> }
+) => Promise<Response> | Response;
 
 /**
  * Wraps a route handler with:

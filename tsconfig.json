@@ -37,6 +37,10 @@
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "SocialFlow-Final11-Team-Client-Workspace-Patch",
+    "SocialFlow-Local-Assist-Upgrade-Patch",
+    "SocialFlow_Final12_Analytics_Hotfix",
+    "SocialFlow_Final12_Analytics_Patch"
   ]
 }

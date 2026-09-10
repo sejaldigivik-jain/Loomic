@@ -869,40 +869,56 @@ export function ComposerView() {
 
                   try {
                     const isVideo = isVideoFile;
-                    const maxReelBytes = 1024 * 1024 * 1024;
-                    if (isVideo && file.size > maxReelBytes) {
-                      throw new Error("Reel/video is larger than Instagram's 1 GB publishing limit.");
-                    }
+                    let uploadedUrl: string;
 
-                    let res: Response;
                     if (isVideo) {
-                      // Stream large MP4/MOV files to the server as a raw body.
-                      // This avoids wrapping a large Reel in multipart FormData.
+                      // Vercel caps serverless request bodies at 4.5 MB, so a
+                      // Reel can never be streamed through our own API. Ask the
+                      // server for a signed URL and send the file straight to
+                      // Supabase Storage; only the public URL comes back to us.
                       const videoType = file.type === "video/quicktime" || fileExtension === "mov" ? "video/quicktime" : "video/mp4";
-                      res = await authenticatedFetch("/api/v1/upload", {
+                      const signRes = await authenticatedFetch("/api/v1/upload/sign", {
                         method: "POST",
                         headers: {
                           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-                          "Content-Type": videoType,
-                          "X-File-Name": encodeURIComponent(file.name),
-                          "X-File-Size": String(file.size),
+                          "Content-Type": "application/json",
                         },
+                        body: JSON.stringify({
+                          filename: file.name,
+                          contentType: videoType,
+                          size: file.size,
+                        }),
+                      });
+                      const signJson = await signRes.json();
+                      if (!signRes.ok) {
+                        throw new Error(signJson.error?.message ?? "Could not start video upload");
+                      }
+
+                      const storageRes = await fetch(signJson.data.signedUrl, {
+                        method: "PUT",
+                        headers: { "Content-Type": videoType },
                         body: file,
                       });
+                      if (!storageRes.ok) {
+                        throw new Error(`Storage rejected the video (HTTP ${storageRes.status})`);
+                      }
+                      uploadedUrl = signJson.data.publicUrl;
                     } else {
                       const formData = new FormData();
                       formData.append("file", file);
-                      res = await authenticatedFetch("/api/v1/upload", {
+                      const res = await authenticatedFetch("/api/v1/upload", {
                         method: "POST",
                         headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
                         body: formData,
                       });
+                      const json = await res.json();
+                      if (!res.ok) throw new Error(json.error?.message ?? "Upload failed");
+                      uploadedUrl = json.data.url;
                     }
-                    const json = await res.json();
-                    if (!res.ok) throw new Error(json.error?.message ?? "Upload failed");
+
                     uploaded.push({
                       type: isVideoFile ? "video" : "image",
-                      url: json.data.url,
+                      url: uploadedUrl,
                       alt: file.name.replace(/\.[^.]+$/, "") || "Attached media",
                     });
                   } catch (error) {
