@@ -1,5 +1,6 @@
 import { db } from "@/lib/db";
-import { publishInstagramCarousel, publishToInstagram } from "@/lib/instagram-publisher";
+import { publishInstagramCarousel, publishToInstagram, type InstagramPublishContext } from "@/lib/instagram-publisher";
+import { instagramConnectionMethod } from "@/lib/instagram-connection";
 import { decryptSecret } from "@/lib/secrets";
 import { publishViaProvider } from "@/lib/social-publisher";
 
@@ -92,10 +93,13 @@ async function publishTarget(targetId: string): Promise<PublishResult> {
       author: { name: "", initials: "", gradient: "" },
     };
     const accessToken = decryptSecret(account.accessToken);
+    const context: InstagramPublishContext = {
+      connectionMethod: instagramConnectionMethod(account.providerData),
+    };
     const requestedType = instagramOptions?.postType ?? "auto";
     return requestedType === "carousel" || (requestedType === "auto" && media.length > 1)
-      ? publishInstagramCarousel(accessToken, igUserId, igPost as any, instagramOptions)
-      : publishToInstagram(accessToken, igUserId, igPost as any, instagramOptions);
+      ? publishInstagramCarousel(accessToken, igUserId, igPost as any, instagramOptions, context)
+      : publishToInstagram(accessToken, igUserId, igPost as any, instagramOptions, context);
   }
 
   return publishViaProvider({

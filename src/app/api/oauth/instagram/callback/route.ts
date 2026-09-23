@@ -121,6 +121,7 @@ export async function GET(req: Request) {
         tokenExpiresAt: expiresAt,
         followers: profile.followers_count,
         avatarUrl: profile.profile_picture_url,
+        providerData: JSON.stringify({ connectionMethod: "instagram_login", apiHost: "graph.instagram.com" }),
         status: "connected",
       },
       create: {
@@ -134,6 +135,7 @@ export async function GET(req: Request) {
         accessToken: encryptSecret(longLived.access_token),
         externalUserId: profile.user_id,
         tokenExpiresAt: expiresAt,
+        providerData: JSON.stringify({ connectionMethod: "instagram_login", apiHost: "graph.instagram.com" }),
         status: "connected",
       },
     });

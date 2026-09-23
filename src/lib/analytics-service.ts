@@ -1,8 +1,6 @@
 import { db } from "@/lib/db";
 import { decryptSecret } from "@/lib/secrets";
-
-const IG_GRAPH_VERSION = process.env.META_GRAPH_API_VERSION ?? "v26.0";
-const IG_GRAPH_BASE = `https://graph.instagram.com/${IG_GRAPH_VERSION}`;
+import { instagramGraphBase } from "@/lib/instagram-connection";
 
 interface GraphErrorPayload {
   error?: { message?: string; type?: string; code?: number; error_subcode?: number };
@@ -137,7 +135,7 @@ async function graphJson<T>(url: string): Promise<T> {
   return body as T;
 }
 
-async function fetchAccountProfile(externalUserId: string, token: string) {
+async function fetchAccountProfile(externalUserId: string, token: string, graphBase: string) {
   const params = new URLSearchParams({
     fields: "id,username,followers_count,media_count,profile_picture_url",
     access_token: token,
@@ -148,10 +146,10 @@ async function fetchAccountProfile(externalUserId: string, token: string) {
     followers_count?: number;
     media_count?: number;
     profile_picture_url?: string;
-  }>(`${IG_GRAPH_BASE}/${externalUserId}?${params.toString()}`);
+  }>(`${graphBase}/${externalUserId}?${params.toString()}`);
 }
 
-async function fetchAccountInsights(externalUserId: string, token: string, days: number) {
+async function fetchAccountInsights(externalUserId: string, token: string, days: number, graphBase: string) {
   const until = Math.floor(Date.now() / 1000);
   const since = until - Math.min(90, Math.max(7, days)) * 24 * 60 * 60;
   const metrics = [
@@ -176,7 +174,7 @@ async function fetchAccountInsights(externalUserId: string, token: string, days:
   });
 
   try {
-    return await graphJson<InsightPayload>(`${IG_GRAPH_BASE}/${externalUserId}/insights?${params.toString()}`);
+    return await graphJson<InsightPayload>(`${graphBase}/${externalUserId}/insights?${params.toString()}`);
   } catch (groupError) {
     // Meta occasionally changes which metrics can be combined. Preserve useful
     // data by retrying metrics individually instead of failing the whole sync.
@@ -191,7 +189,7 @@ async function fetchAccountInsights(externalUserId: string, token: string, days:
         access_token: token,
       });
       try {
-        const response = await graphJson<InsightPayload>(`${IG_GRAPH_BASE}/${externalUserId}/insights?${single.toString()}`);
+        const response = await graphJson<InsightPayload>(`${graphBase}/${externalUserId}/insights?${single.toString()}`);
         if (response.data?.length) data.push(...response.data);
       } catch (error) {
         if (!firstError && error instanceof Error) firstError = error;
@@ -236,6 +234,7 @@ async function fetchOwnedMedia(
   maxMedia = 60,
   mediaSince?: Date,
   mediaUntil?: Date,
+  graphBase = `https://graph.instagram.com/${process.env.META_GRAPH_API_VERSION ?? "v26.0"}`,
 ) {
   const fields = [
     "id",
@@ -250,7 +249,7 @@ async function fetchOwnedMedia(
     "comments_count",
   ].join(",");
   const collected: InstagramMediaRow[] = [];
-  let next: string | undefined = `${IG_GRAPH_BASE}/${externalUserId}/media?${new URLSearchParams({ fields, limit: "50", access_token: token }).toString()}`;
+  let next: string | undefined = `${graphBase}/${externalUserId}/media?${new URLSearchParams({ fields, limit: "50", access_token: token }).toString()}`;
 
   while (next && collected.length < maxMedia) {
     const page: { data?: InstagramMediaRow[]; paging?: { next?: string } } = await graphJson(next);
@@ -284,6 +283,7 @@ async function fetchMediaMetricGroup(
   token: string,
   metrics: string[],
   metricType?: "total_value",
+  graphBase = `https://graph.instagram.com/${process.env.META_GRAPH_API_VERSION ?? "v26.0"}`,
 ) {
   if (!metrics.length) {
     return { data: [] } satisfies InsightPayload;
@@ -303,7 +303,7 @@ async function fetchMediaMetricGroup(
 
     const response =
       await graphOptional<InsightPayload>(
-        `${IG_GRAPH_BASE}/${mediaId}/insights?${single.toString()}`,
+        `${graphBase}/${mediaId}/insights?${single.toString()}`,
       );
 
     return response?.data ?? [];
@@ -323,7 +323,7 @@ async function fetchMediaMetricGroup(
   try {
     const grouped =
       await graphJson<InsightPayload>(
-        `${IG_GRAPH_BASE}/${mediaId}/insights?${params.toString()}`,
+        `${graphBase}/${mediaId}/insights?${params.toString()}`,
       );
 
     groupedData =
@@ -410,6 +410,7 @@ async function fetchMediaBreakdown(
   token: string,
   metric: string,
   breakdown: string,
+  graphBase = `https://graph.instagram.com/${process.env.META_GRAPH_API_VERSION ?? "v26.0"}`,
 ): Promise<InsightPayload | null> {
   const params = new URLSearchParams({
     metric,
@@ -419,7 +420,7 @@ async function fetchMediaBreakdown(
   });
 
   return graphOptional<InsightPayload>(
-    `${IG_GRAPH_BASE}/${mediaId}/insights?${params.toString()}`,
+    `${graphBase}/${mediaId}/insights?${params.toString()}`,
   );
 }
 
@@ -497,6 +498,7 @@ async function fetchMediaInsights(
   mediaId: string,
   token: string,
   isReel: boolean,
+  graphBase: string,
 ) {
   /*
    * Core media metrics. These are exact values returned by Meta.
@@ -514,6 +516,8 @@ async function fetchMediaInsights(
         "shares",
         "total_interactions",
       ],
+      undefined,
+      graphBase,
     );
 
   /*
@@ -530,6 +534,7 @@ async function fetchMediaInsights(
         "total_comments",
       ],
       "total_value",
+      graphBase,
     );
 
   /*
@@ -545,6 +550,8 @@ async function fetchMediaInsights(
         "profile_visits",
         "follows",
       ],
+      undefined,
+      graphBase,
     );
 
   /*
@@ -558,6 +565,7 @@ async function fetchMediaInsights(
       token,
       "profile_activity",
       "action_type",
+      graphBase,
     );
 
   /*
@@ -573,6 +581,7 @@ async function fetchMediaInsights(
       token,
       "views",
       "follow_type",
+      graphBase,
     );
 
   const viewSurfaceBreakdownPayload =
@@ -581,6 +590,7 @@ async function fetchMediaInsights(
       token,
       "views",
       "surface_type",
+      graphBase,
     );
 
   const interactionFollowBreakdownPayload =
@@ -589,6 +599,7 @@ async function fetchMediaInsights(
       token,
       "total_interactions",
       "follow_type",
+      graphBase,
     );
 
   /*
@@ -604,6 +615,7 @@ async function fetchMediaInsights(
         "crossposted_views",
       ],
       "total_value",
+      graphBase,
     );
 
   /*
@@ -623,6 +635,8 @@ async function fetchMediaInsights(
           "ig_reels_avg_watch_time",
           "ig_reels_video_view_total_time",
         ],
+        undefined,
+        graphBase,
       );
   }
 
@@ -1086,10 +1100,11 @@ export async function syncInstagramAccountAnalytics(
 
   try {
     const token = decryptSecret(account.accessToken);
+    const graphBase = instagramGraphBase(account.providerData);
     const [profile, accountInsights, media] = await Promise.all([
-      fetchAccountProfile(account.externalUserId, token),
-      fetchAccountInsights(account.externalUserId, token, days),
-      fetchOwnedMedia(account.externalUserId, token, maxMedia, mediaSince, mediaUntil),
+      fetchAccountProfile(account.externalUserId, token, graphBase),
+      fetchAccountInsights(account.externalUserId, token, days, graphBase),
+      fetchOwnedMedia(account.externalUserId, token, maxMedia, mediaSince, mediaUntil, graphBase),
     ]);
 
     const today = dayStart(new Date());
@@ -1163,6 +1178,7 @@ export async function syncInstagramAccountAnalytics(
         item.id,
         token,
         isReel,
+        graphBase,
       );
 
       const fallbackLikes =

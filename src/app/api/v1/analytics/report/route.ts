@@ -3,12 +3,10 @@ import { decryptSecret } from "@/lib/secrets";
 import { withHandler, ok, ApiError } from "@/lib/api-utils";
 import { requireWorkspace } from "@/lib/server-auth";
 import { resolveAccountScope } from "@/lib/account-access";
+import { instagramGraphBase } from "@/lib/instagram-connection";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-
-const IG_GRAPH_VERSION = process.env.META_GRAPH_API_VERSION ?? "v26.0";
-const IG_GRAPH_BASE = `https://graph.instagram.com/${IG_GRAPH_VERSION}`;
 
 const RANGE_DAYS: Record<string, number> = {
   "7d": 7,
@@ -292,6 +290,7 @@ export const GET = withHandler(null, async ({ req }) => {
         displayName: true,
         externalUserId: true,
         accessToken: true,
+        providerData: true,
       },
     });
 
@@ -371,6 +370,7 @@ export const GET = withHandler(null, async ({ req }) => {
   const token = decryptSecret(
     account.accessToken,
   );
+  const graphBase = instagramGraphBase(account.providerData);
 
   const {
     from,
@@ -405,7 +405,7 @@ export const GET = withHandler(null, async ({ req }) => {
     });
 
     return graphOptional(
-      `${IG_GRAPH_BASE}/${account.externalUserId}/insights?${params.toString()}`,
+      `${graphBase}/${account.externalUserId}/insights?${params.toString()}`,
     );
   }
 
@@ -441,7 +441,7 @@ export const GET = withHandler(null, async ({ req }) => {
 
   const followerPayload =
     await graphOptional(
-      `${IG_GRAPH_BASE}/${account.externalUserId}/insights?${followerParams.toString()}`,
+      `${graphBase}/${account.externalUserId}/insights?${followerParams.toString()}`,
     );
 
   const followerRows =
@@ -536,7 +536,7 @@ export const GET = withHandler(null, async ({ req }) => {
 
     const payload =
       await graphOptional(
-        `${IG_GRAPH_BASE}/${reel.externalMediaId}/insights?${params.toString()}`,
+        `${graphBase}/${reel.externalMediaId}/insights?${params.toString()}`,
       );
 
     const raw =

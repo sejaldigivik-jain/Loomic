@@ -13,6 +13,7 @@ import { withHandler, ok, ApiError } from "@/lib/api-utils";
 import { requireWorkspace } from "@/lib/server-auth";
 import { resolveAccountScope } from "@/lib/account-access";
 import { consumeAccountConnectionGrant } from "@/lib/account-connection-lock";
+import { instagramConnectionMethod, parseInstagramProviderData, supportsInstagramNativeLocation, supportsInstagramNativeTags } from "@/lib/instagram-connection";
 
 export const runtime = "nodejs";
 
@@ -37,23 +38,34 @@ export const GET = withHandler(null, async ({ req }) => {
   });
 
   return ok(
-    accounts.map((a) => ({
-      id: a.id,
-      platform: a.platform,
-      handle: a.handle,
-      displayName: a.displayName,
-      avatarUrl: a.avatarUrl,
-      avatarGradient: a.avatarGradient ?? undefined,
-      followers: a.followers,
-      status: a.status,
-      tokenExpiresAt: a.tokenExpiresAt ?? undefined,
-      isReal: a.accessToken !== "" && a.accessToken !== "demo-token" ? true : false,
-      externalUserId: a.externalUserId ?? undefined,
-      connectedAt: a.connectedAt,
-      // Agency workflow: the connected account itself is the client.
-      clientId: a.id,
-      clientName: a.displayName || a.handle,
-    }))
+    accounts.map((a) => {
+      const instagramData = a.platform === "instagram" ? parseInstagramProviderData(a.providerData) : {};
+      const method = a.platform === "instagram" ? instagramConnectionMethod(a.providerData) : undefined;
+      return {
+        id: a.id,
+        platform: a.platform,
+        handle: a.handle,
+        displayName: a.displayName,
+        avatarUrl: a.avatarUrl,
+        avatarGradient: a.avatarGradient ?? undefined,
+        followers: a.followers,
+        status: a.status,
+        tokenExpiresAt: a.tokenExpiresAt ?? undefined,
+        isReal: a.accessToken !== "" && a.accessToken !== "demo-token" ? true : false,
+        externalUserId: a.externalUserId ?? undefined,
+        connectedAt: a.connectedAt,
+        ...(a.platform === "instagram" ? {
+          instagramConnectionMethod: method,
+          instagramPageId: instagramData.pageId,
+          instagramPageName: instagramData.pageName,
+          supportsNativeInstagramTags: supportsInstagramNativeTags(a.providerData),
+          supportsNativeInstagramLocation: supportsInstagramNativeLocation(a.providerData),
+        } : {}),
+        // Agency workflow: the connected account itself is the client.
+        clientId: a.id,
+        clientName: a.displayName || a.handle,
+      };
+    })
   );
 });
 

@@ -3,6 +3,8 @@ import { db } from "@/lib/db";
 import { requireAccountAccess } from "@/lib/server-auth";
 import { syncInstagramAnalytics } from "@/lib/analytics-service";
 import { getUsableSocialAccessToken } from "@/lib/social-publisher";
+import { decryptSecret } from "@/lib/secrets";
+import { instagramConnectionMethod, instagramGraphBase } from "@/lib/instagram-connection";
 
 export const runtime = "nodejs";
 
@@ -23,14 +25,23 @@ export const POST = withHandler(null, async ({ req, ctx }) => {
   if (!account) throw ApiError.notFound("Account not found");
   if (!account.accessToken || account.accessToken === "demo-token") throw ApiError.badRequest("Connect this account with real OAuth first");
 
-  const token = await getUsableSocialAccessToken(account);
+  const token = account.platform === "instagram" && instagramConnectionMethod(account.providerData) === "facebook_login"
+    ? decryptSecret(account.accessToken)
+    : await getUsableSocialAccessToken(account);
   let profileUpdated = false;
   let analyticsSynced = 0;
 
   if (account.platform === "instagram") {
+    const method = instagramConnectionMethod(account.providerData);
+    const base = instagramGraphBase(account.providerData);
+    const profileEndpoint = method === "facebook_login" && account.externalUserId
+      ? `${base}/${encodeURIComponent(account.externalUserId)}`
+      : `${base}/me`;
     const profile = await jsonOrThrow<any>(
-      await fetch(`https://graph.instagram.com/${META_VERSION}/me?${new URLSearchParams({
-        fields: "user_id,username,followers_count,profile_picture_url,account_type,media_count",
+      await fetch(`${profileEndpoint}?${new URLSearchParams({
+        fields: method === "facebook_login"
+          ? "id,username,followers_count,profile_picture_url,media_count"
+          : "user_id,username,followers_count,profile_picture_url,account_type,media_count",
         access_token: token,
       })}`),
       "Instagram profile refresh"

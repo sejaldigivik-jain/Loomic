@@ -16,7 +16,18 @@
 import type { InstagramOptions, Post } from "@/lib/mock-data";
 
 const IG_GRAPH_VERSION = process.env.META_GRAPH_API_VERSION ?? "v26.0";
-const IG_GRAPH_BASE = `https://graph.instagram.com/${IG_GRAPH_VERSION}`;
+const INSTAGRAM_LOGIN_GRAPH_BASE = `https://graph.instagram.com/${IG_GRAPH_VERSION}`;
+const FACEBOOK_LOGIN_GRAPH_BASE = `https://graph.facebook.com/${IG_GRAPH_VERSION}`;
+
+export type InstagramPublishContext = {
+  connectionMethod?: "instagram_login" | "facebook_login" | "meta_developer_token" | "unknown";
+};
+
+function graphBase(context?: InstagramPublishContext): string {
+  return context?.connectionMethod === "facebook_login"
+    ? FACEBOOK_LOGIN_GRAPH_BASE
+    : INSTAGRAM_LOGIN_GRAPH_BASE;
+}
 
 const VIDEO_PROCESSING_TIMEOUT_MS = 5 * 60 * 1000;
 const IMAGE_PROCESSING_TIMEOUT_MS = 90 * 1000;
@@ -37,10 +48,12 @@ export interface InstagramPublishingLimit {
 
 export async function getInstagramPublishingLimit(
   accessToken: string,
-  igUserId: string
+  igUserId: string,
+  context?: InstagramPublishContext
 ): Promise<InstagramPublishingLimit> {
+  const base = graphBase(context);
   const res = await fetch(
-    `${IG_GRAPH_BASE}/${encodeURIComponent(igUserId)}/content_publishing_limit?fields=quota_usage,config&access_token=${encodeURIComponent(accessToken)}`,
+    `${base}/${encodeURIComponent(igUserId)}/content_publishing_limit?fields=quota_usage,config&access_token=${encodeURIComponent(accessToken)}`,
     { cache: "no-store" }
   );
 
@@ -78,9 +91,9 @@ export async function getInstagramPublishingLimit(
   };
 }
 
-async function assertInstagramPublishingQuota(accessToken: string, igUserId: string): Promise<void> {
+async function assertInstagramPublishingQuota(accessToken: string, igUserId: string, context?: InstagramPublishContext): Promise<void> {
   try {
-    const limit = await getInstagramPublishingLimit(accessToken, igUserId);
+    const limit = await getInstagramPublishingLimit(accessToken, igUserId, context);
     console.log(`[Instagram] Publishing usage: ${limit.used}/${limit.total}`);
     if (limit.total > 0 && limit.remaining <= 0) {
       throw new Error(
@@ -169,7 +182,7 @@ function normalizeHashtag(value: string): string {
   return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
 }
 
-function captionFor(post: Post, options?: InstagramOptions, includeCaption = true): string {
+function captionFor(post: Post, options?: InstagramOptions, includeCaption = true, nativeLocationActive = false): string {
   if (!includeCaption) return "";
 
   const content = post.content.trim();
@@ -184,7 +197,7 @@ function captionFor(post: Post, options?: InstagramOptions, includeCaption = tru
     );
 
   const location = options?.nativeFinish?.location?.trim();
-  const locationLine = location && !content.toLowerCase().includes(location.toLowerCase())
+  const locationLine = !nativeLocationActive && location && !content.toLowerCase().includes(location.toLowerCase())
     ? `📍 ${location}`
     : "";
 
@@ -228,10 +241,11 @@ function validateInstagramPost(post: Post, type: ResolvedInstagramPostType): str
 async function createContainer(
   accessToken: string,
   igUserId: string,
-  params: URLSearchParams
+  params: URLSearchParams,
+  context?: InstagramPublishContext
 ): Promise<{ id?: string; error?: string }> {
   params.set("access_token", accessToken);
-  const res = await fetch(`${IG_GRAPH_BASE}/${igUserId}/media`, {
+  const res = await fetch(`${graphBase(context)}/${igUserId}/media`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: params,
@@ -247,9 +261,9 @@ async function createContainer(
   return { id: json.id };
 }
 
-async function getContainerStatus(accessToken: string, containerId: string): Promise<ContainerStatus> {
+async function getContainerStatus(accessToken: string, containerId: string, context?: InstagramPublishContext): Promise<ContainerStatus> {
   const res = await fetch(
-    `${IG_GRAPH_BASE}/${containerId}?fields=status_code,status&access_token=${encodeURIComponent(accessToken)}`,
+    `${graphBase(context)}/${containerId}?fields=status_code,status&access_token=${encodeURIComponent(accessToken)}`,
     { cache: "no-store" }
   );
   const data = (await res.json().catch(() => ({}))) as InstagramErrorPayload;
@@ -271,7 +285,8 @@ async function getContainerStatus(accessToken: string, containerId: string): Pro
 async function waitForContainerReady(
   accessToken: string,
   containerId: string,
-  maxWaitMs = IMAGE_PROCESSING_TIMEOUT_MS
+  maxWaitMs = IMAGE_PROCESSING_TIMEOUT_MS,
+  context?: InstagramPublishContext
 ): Promise<void> {
   const startedAt = Date.now();
   let attempt = 0;
@@ -279,7 +294,7 @@ async function waitForContainerReady(
   let lastStatus = "";
 
   while (Date.now() - startedAt < maxWaitMs) {
-    const data = await getContainerStatus(accessToken, containerId);
+    const data = await getContainerStatus(accessToken, containerId, context);
     lastStatusCode = data.statusCode ?? "UNKNOWN";
     lastStatus = data.status ?? "";
 
@@ -309,14 +324,15 @@ async function waitForContainerReady(
 async function publishContainer(
   accessToken: string,
   igUserId: string,
-  creationId: string
+  creationId: string,
+  context?: InstagramPublishContext
 ): Promise<InstagramPublishResult> {
   // FINISHED can occasionally race Meta's publish endpoint by a few seconds.
   // Retry only the known transient "media id not available/not ready" case.
   const maxPublishAttempts = 3;
 
   for (let attempt = 1; attempt <= maxPublishAttempts; attempt += 1) {
-    const publishRes = await fetch(`${IG_GRAPH_BASE}/${igUserId}/media_publish`, {
+    const publishRes = await fetch(`${graphBase(context)}/${igUserId}/media_publish`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({ access_token: accessToken, creation_id: creationId }),
@@ -326,7 +342,7 @@ async function publishContainer(
 
     if (publishRes.ok && published.id) {
       const permalinkRes = await fetch(
-        `${IG_GRAPH_BASE}/${published.id}?fields=permalink&access_token=${encodeURIComponent(accessToken)}`,
+        `${graphBase(context)}/${published.id}?fields=permalink&access_token=${encodeURIComponent(accessToken)}`,
         { cache: "no-store" }
       );
       let permalink: string | undefined;
@@ -347,7 +363,7 @@ async function publishContainer(
     if (attempt < maxPublishAttempts && isTransientPublishError(message)) {
       await sleep(attempt * 7_500);
       // Confirm the same container has not moved into ERROR/EXPIRED before retry.
-      const status = await getContainerStatus(accessToken, creationId);
+      const status = await getContainerStatus(accessToken, creationId, context);
       if (status.statusCode === "ERROR" || status.statusCode === "EXPIRED") {
         return {
           success: false,
@@ -363,44 +379,66 @@ async function publishContainer(
   return { success: false, errorMessage: "Instagram publishing failed after retrying the media container." };
 }
 
+function nativeUserTags(handles: string[]): string | undefined {
+  const cleaned = handles
+    .map((value) => value.trim().replace(/^@+/, ""))
+    .filter(Boolean)
+    .slice(0, 20);
+  if (!cleaned.length) return undefined;
+  return JSON.stringify(cleaned.map((username, index) => ({
+    username,
+    x: Math.min(0.94, 0.15 + (index % 4) * 0.22),
+    y: Math.min(0.94, 0.22 + Math.floor(index / 4) * 0.18),
+  })));
+}
+
 export async function publishToInstagram(
   accessToken: string,
   igUserId: string,
   post: Post,
-  options?: InstagramOptions
+  options?: InstagramOptions,
+  context?: InstagramPublishContext
 ): Promise<InstagramPublishResult> {
   const type = resolveInstagramPostType(post, options);
-  if (type === "carousel") return publishInstagramCarousel(accessToken, igUserId, post, options);
+  if (type === "carousel") return publishInstagramCarousel(accessToken, igUserId, post, options, context);
 
   const invalid = validateInstagramPost(post, type);
   if (invalid) return { success: false, errorMessage: invalid };
 
   const media = post.media[0];
   try {
-    await assertInstagramPublishingQuota(accessToken, igUserId);
+    await assertInstagramPublishingQuota(accessToken, igUserId, context);
     const params = new URLSearchParams();
+    const facebookLinked = context?.connectionMethod === "facebook_login";
+    const nativeLocationId = facebookLinked ? options?.nativeFinish?.locationId?.trim() : "";
 
     if (type !== "story") {
-      params.set("caption", captionFor(post, options));
+      params.set("caption", captionFor(post, options, true, Boolean(nativeLocationId)));
+      if (nativeLocationId) params.set("location_id", nativeLocationId);
     }
 
     if (media.type === "image") {
       params.set("image_url", media.url);
-      if (type === "story") params.set("media_type", "STORIES");
+      if (type === "story") {
+        params.set("media_type", "STORIES");
+      } else if (facebookLinked) {
+        const userTags = nativeUserTags(options?.nativeFinish?.taggedPeople ?? []);
+        if (userTags) params.set("user_tags", userTags);
+      }
     } else {
       params.set("video_url", media.url);
       params.set("media_type", type === "story" ? "STORIES" : "REELS");
       if (type === "reel") params.set("share_to_feed", String(options?.shareToFeed ?? true));
     }
 
-    const container = await createContainer(accessToken, igUserId, params);
+    const container = await createContainer(accessToken, igUserId, params, context);
     if (!container.id) {
       return { success: false, errorMessage: `Container creation failed: ${container.error ?? "Unknown Instagram API error"}` };
     }
 
     const timeout = media.type === "video" ? VIDEO_PROCESSING_TIMEOUT_MS : IMAGE_PROCESSING_TIMEOUT_MS;
-    await waitForContainerReady(accessToken, container.id, timeout);
-    return publishContainer(accessToken, igUserId, container.id);
+    await waitForContainerReady(accessToken, container.id, timeout, context);
+    return publishContainer(accessToken, igUserId, container.id, context);
   } catch (err) {
     return { success: false, errorMessage: err instanceof Error ? err.message : "Network error during Instagram publish" };
   }
@@ -411,43 +449,54 @@ export async function publishInstagramCarousel(
   accessToken: string,
   igUserId: string,
   post: Post,
-  options?: InstagramOptions
+  options?: InstagramOptions,
+  context?: InstagramPublishContext
 ): Promise<InstagramPublishResult> {
   const invalid = validateInstagramPost(post, "carousel");
   if (invalid) return { success: false, errorMessage: invalid };
 
   try {
-    await assertInstagramPublishingQuota(accessToken, igUserId);
+    await assertInstagramPublishingQuota(accessToken, igUserId, context);
     const childIds: string[] = [];
-    for (const media of post.media.slice(0, 10)) {
+    const facebookLinked = context?.connectionMethod === "facebook_login";
+    const carouselMedia = post.media.slice(0, 10);
+    for (const [mediaIndex, media] of carouselMedia.entries()) {
       const params = new URLSearchParams({ is_carousel_item: "true" });
       if (media.type === "image") {
         params.set("image_url", media.url);
+        // Loomic has one global tag list today, so apply native carousel tags
+        // to the first image only instead of tagging the same users on every slide.
+        if (facebookLinked && mediaIndex === 0) {
+          const userTags = nativeUserTags(options?.nativeFinish?.taggedPeople ?? []);
+          if (userTags) params.set("user_tags", userTags);
+        }
       } else {
         params.set("video_url", media.url);
         params.set("media_type", "VIDEO");
       }
-      const child = await createContainer(accessToken, igUserId, params);
+      const child = await createContainer(accessToken, igUserId, params, context);
       if (!child.id) {
         return { success: false, errorMessage: `Carousel item failed: ${child.error ?? "Unknown Instagram API error"}` };
       }
       if (media.type === "video") {
-        await waitForContainerReady(accessToken, child.id, VIDEO_PROCESSING_TIMEOUT_MS);
+        await waitForContainerReady(accessToken, child.id, VIDEO_PROCESSING_TIMEOUT_MS, context);
       }
       childIds.push(child.id);
     }
 
+    const nativeLocationId = facebookLinked ? options?.nativeFinish?.locationId?.trim() : "";
     const parentParams = new URLSearchParams({
       media_type: "CAROUSEL",
-      caption: captionFor(post, options),
+      caption: captionFor(post, options, true, Boolean(nativeLocationId)),
       children: childIds.join(","),
     });
-    const parent = await createContainer(accessToken, igUserId, parentParams);
+    if (nativeLocationId) parentParams.set("location_id", nativeLocationId);
+    const parent = await createContainer(accessToken, igUserId, parentParams, context);
     if (!parent.id) {
       return { success: false, errorMessage: `Carousel container failed: ${parent.error ?? "Unknown Instagram API error"}` };
     }
-    await waitForContainerReady(accessToken, parent.id, IMAGE_PROCESSING_TIMEOUT_MS);
-    return publishContainer(accessToken, igUserId, parent.id);
+    await waitForContainerReady(accessToken, parent.id, IMAGE_PROCESSING_TIMEOUT_MS, context);
+    return publishContainer(accessToken, igUserId, parent.id, context);
   } catch (err) {
     return { success: false, errorMessage: err instanceof Error ? err.message : "Network error during carousel publish" };
   }
@@ -456,7 +505,7 @@ export async function publishInstagramCarousel(
 /** Refresh a long-lived Instagram token. */
 export async function refreshLongLivedToken(currentToken: string): Promise<{ access_token: string; expires_in: number }> {
   const res = await fetch(
-    `${IG_GRAPH_BASE}/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(currentToken)}`
+    `${INSTAGRAM_LOGIN_GRAPH_BASE}/refresh_access_token?grant_type=ig_refresh_token&access_token=${encodeURIComponent(currentToken)}`
   );
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as InstagramErrorPayload;

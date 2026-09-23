@@ -213,22 +213,91 @@ async function connectFacebook(code: string, workspaceId: string, credentials: P
     userToken = long.access_token;
     expiresIn = long.expires_in ?? expiresIn;
   } catch {
-    // The initial token is still usable if the exchange is unavailable.
+    // The initial token is still usable if the long-lived exchange is unavailable.
   }
 
-  const pages = await readJson<{ data?: Array<{ id: string; name: string; access_token: string; followers_count?: number; fan_count?: number; picture?: { data?: { url?: string } } }> }>(
+  type FacebookPage = {
+    id: string;
+    name: string;
+    access_token: string;
+    followers_count?: number;
+    fan_count?: number;
+    picture?: { data?: { url?: string } };
+    tasks?: string[];
+    instagram_business_account?: { id?: string };
+  };
+
+  const pages = await readJson<{ data?: FacebookPage[] }>(
     await fetch(`https://graph.facebook.com/${META_VERSION}/me/accounts?${new URLSearchParams({
-      fields: "id,name,access_token,followers_count,fan_count,picture{url}", access_token: userToken,
+      fields: "id,name,access_token,followers_count,fan_count,picture{url},tasks,instagram_business_account",
+      access_token: userToken,
     })}`), "Facebook Pages"
   );
+
   if (!pages.data?.length) throw new Error("Facebook Pages: no manageable Pages were returned for this account");
+
   for (const page of pages.data) {
+    // Preserve Loomic's existing Facebook Page connection behavior.
     await saveAccount({
-      workspaceId, platform: "facebook", handle: page.name, displayName: page.name,
-      accessToken: page.access_token, externalUserId: page.id,
-      avatarUrl: page.picture?.data?.url, followers: page.followers_count ?? page.fan_count ?? 0,
-      expiresIn, providerData: { pageId: page.id },
+      workspaceId,
+      platform: "facebook",
+      handle: page.name,
+      displayName: page.name,
+      accessToken: page.access_token,
+      externalUserId: page.id,
+      avatarUrl: page.picture?.data?.url,
+      followers: page.followers_count ?? page.fan_count ?? 0,
+      expiresIn,
+      providerData: { pageId: page.id, tasks: page.tasks ?? [] },
     });
+
+    const igUserId = page.instagram_business_account?.id;
+    if (!igUserId) continue;
+
+    try {
+      const profile = await readJson<{
+        id?: string;
+        username?: string;
+        name?: string;
+        profile_picture_url?: string;
+        followers_count?: number;
+      }>(
+        await fetch(`https://graph.facebook.com/${META_VERSION}/${encodeURIComponent(igUserId)}?${new URLSearchParams({
+          fields: "id,username,name,profile_picture_url,followers_count",
+          access_token: page.access_token,
+        })}`),
+        `Instagram profile linked to ${page.name}`
+      );
+
+      if (!profile.username) continue;
+
+      // SocialAccount is unique by workspace/platform/handle. If this Instagram
+      // account was previously connected through Instagram Login, this upgrades
+      // the SAME row in-place, so scheduled posts, client assignments and
+      // analytics relations continue to point to the same account ID.
+      await saveAccount({
+        workspaceId,
+        platform: "instagram",
+        handle: `@${profile.username}`,
+        displayName: profile.name || profile.username,
+        accessToken: page.access_token,
+        externalUserId: profile.id || igUserId,
+        avatarUrl: profile.profile_picture_url,
+        followers: Number(profile.followers_count ?? 0),
+        expiresIn,
+        providerData: {
+          connectionMethod: "facebook_login",
+          apiHost: "graph.facebook.com",
+          pageId: page.id,
+          pageName: page.name,
+          pageTasks: page.tasks ?? [],
+        },
+      });
+    } catch (error) {
+      // A Facebook Page can still connect even if its linked Instagram account
+      // cannot be read with the granted permissions. Do not roll back the Page.
+      console.warn(`[oauth/facebook] linked Instagram discovery failed for page ${page.id}`, error);
+    }
   }
 }
 

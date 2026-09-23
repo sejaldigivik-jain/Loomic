@@ -98,6 +98,7 @@ const createSchema = z.object({
       musicTitle: z.string().max(120).optional(),
       musicArtist: z.string().max(120).optional(),
       location: z.string().max(200).optional(),
+      locationId: z.string().max(100).optional(),
       taggedPeople: z.array(z.string().max(100)).max(20).optional(),
       collaborators: z.array(z.string().max(100)).max(10).optional(),
       firstComment: z.string().max(2200).optional(),

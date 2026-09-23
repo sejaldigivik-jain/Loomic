@@ -128,8 +128,8 @@ export async function providerCredentials(
   }
 
   const key = envKey(provider);
-  const clientId = process.env[`${key}_CLIENT_ID`];
-  const clientSecret = process.env[`${key}_CLIENT_SECRET`] ?? "";
+  const clientId = process.env[`${key}_CLIENT_ID`] ?? (provider === "facebook" ? process.env.META_APP_ID : undefined);
+  const clientSecret = process.env[`${key}_CLIENT_SECRET`] ?? (provider === "facebook" ? process.env.META_APP_SECRET : undefined) ?? "";
   const redirectUri = effectiveRedirectUri(provider, process.env[`${key}_REDIRECT_URI`], origin);
   // X supports public clients, so a client secret is optional there.
   if (!clientId || (provider !== "twitter" && !clientSecret)) return null;
@@ -153,7 +153,7 @@ export function buildAuthorizeUrl(provider: Exclude<OAuthProvider, "instagram">,
         client_id: credentials.clientId,
         redirect_uri: credentials.redirectUri,
         response_type: "code",
-        scope: "pages_show_list,pages_manage_posts,pages_read_engagement",
+        scope: "pages_show_list,pages_manage_posts,pages_read_engagement,instagram_basic,instagram_content_publish,instagram_manage_insights",
         state,
       });
       return `https://www.facebook.com/${metaVersion()}/dialog/oauth?${q}`;

@@ -371,6 +371,28 @@ function ConnectDialog({
                 </div>
               </div>
             </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (providerConfig?.providers?.facebook?.configured) {
+                  void launchProviderOAuth("facebook");
+                } else {
+                  toast.info("Facebook Login needs one-time setup", { description: "Configure the same Meta Business app under Settings → Integrations → Facebook, then reconnect Instagram." });
+                  onConfigure();
+                  handleClose();
+                }
+              }}
+              className="w-full rounded-xl border border-fuchsia-500/30 bg-fuchsia-500/5 p-4 text-left transition hover:border-fuchsia-500/60"
+            >
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 rounded-lg bg-fuchsia-500/10 p-2 text-fuchsia-600"><Shield className="h-4 w-4" /></div>
+                <div>
+                  <div className="flex flex-wrap items-center gap-2 text-sm font-semibold">Enhanced Instagram via Facebook <Badge className="bg-fuchsia-600 text-[9px] text-white">NATIVE TAGS + LOCATION</Badge></div>
+                  <div className="mt-1 text-xs text-muted-foreground">Connect the Facebook Page linked to this professional Instagram account. Loomic keeps the same Instagram account row and upgrades it for supported native media tags and native location IDs.</div>
+                  <div className="mt-1 text-[10px] text-muted-foreground">{providerConfig?.providers?.facebook?.configured ? "Facebook OAuth is configured and ready." : "Facebook OAuth is not configured yet; click to open Integrations."}</div>
+                </div>
+              </div>
+            </button>
             <Button variant="ghost" className="w-full" onClick={() => setStep("select")}>Back</Button>
           </div>
         )}

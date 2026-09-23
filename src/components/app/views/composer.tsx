@@ -40,6 +40,7 @@ import { PLATFORMS, type PlatformId } from "@/lib/platforms";
 import type { InstagramPostType } from "@/lib/mock-data";
 import { cn, formatCompact } from "@/lib/utils";
 import { PlatformPreview } from "../composer/platform-preview";
+import { StoryEditor } from "../composer/story-editor";
 import { toast } from "sonner";
 
 const EMOJI_SET = ["🚀", "✨", "🎯", "💡", "🔥", "📈", "💬", "🙌", "⚡", "🌟", "🎉", "❤️", "👀", "✅", "📌", "🎨"];
@@ -54,6 +55,8 @@ type LocationSuggestion = {
   lat?: number;
   lon?: number;
   resultType?: string;
+  nativeId?: string;
+  source?: "meta" | "geoapify";
 };
 
 type InstagramPublishingLimit = {
@@ -133,6 +136,7 @@ export function ComposerView() {
   const [instagramMusicTitle, setInstagramMusicTitle] = useState("");
   const [instagramMusicArtist, setInstagramMusicArtist] = useState("");
   const [instagramLocation, setInstagramLocation] = useState("");
+  const [instagramLocationId, setInstagramLocationId] = useState("");
   const [instagramLocationSuggestions, setInstagramLocationSuggestions] = useState<LocationSuggestion[]>([]);
   const [instagramLocationLoading, setInstagramLocationLoading] = useState(false);
   const [instagramLocationSearchEnabled, setInstagramLocationSearchEnabled] = useState(false);
@@ -149,6 +153,12 @@ export function ComposerView() {
   const [instagramLimitErrors, setInstagramLimitErrors] = useState<Record<string, string>>({});
 
   const hasInstagram = composerPlatforms.includes("instagram");
+  const selectedInstagramAccounts = composerAccountIds
+    .map((id) => accounts.find((account) => account.id === id))
+    .filter((account): account is NonNullable<typeof account> => Boolean(account && account.platform === "instagram"));
+  const enhancedInstagramAccount = selectedInstagramAccounts.find((account) => account.instagramConnectionMethod === "facebook_login");
+  const hasEnhancedInstagram = Boolean(enhancedInstagramAccount);
+  const nativeTaggingAvailable = selectedInstagramAccounts.some((account) => account.supportsNativeInstagramTags);
   const editingPost = composerEditingId ? posts.find((post) => post.id === composerEditingId) ?? null : null;
 
   // Per-account overrides live on PostTarget rows. Populate the local editor
@@ -162,6 +172,7 @@ export function ComposerView() {
         setInstagramMusicTitle("");
         setInstagramMusicArtist("");
         setInstagramLocation("");
+        setInstagramLocationId("");
         setInstagramLocationSuggestions([]);
         setInstagramLocationSearchEnabled(false);
         setInstagramLocationSuggestionsOpen(false);
@@ -183,6 +194,7 @@ export function ComposerView() {
     setInstagramMusicTitle(nativeFinish?.musicTitle ?? "");
     setInstagramMusicArtist(nativeFinish?.musicArtist ?? "");
     setInstagramLocation(nativeFinish?.location ?? "");
+    setInstagramLocationId(nativeFinish?.locationId ?? "");
     setInstagramLocationSuggestions([]);
     setInstagramLocationSearchEnabled(false);
     setInstagramLocationSuggestionsOpen(false);
@@ -192,8 +204,11 @@ export function ComposerView() {
     setInstagramEffectsNotes(nativeFinish?.effectsNotes ?? "");
   }, [composerEditingId, editingPost?.id]);
 
-  // Live location autocomplete. The browser calls our own authenticated route;
-  // provider credentials stay on the server and are never exposed to the client.
+  // Instagram-style location autocomplete. Facebook-linked Instagram accounts
+  // try Meta Pages Search first so a selected place can become a native
+  // Instagram location header. If Meta search is unavailable (often until App
+  // Review/Business Verification), Loomic falls back to the existing Geoapify
+  // text-location suggestions without breaking publishing.
   useEffect(() => {
     const query = instagramLocation.trim();
     if (!hasInstagram || !instagramLocationSearchEnabled || query.length < 2) {
@@ -206,6 +221,25 @@ export function ComposerView() {
     const timer = window.setTimeout(async () => {
       setInstagramLocationLoading(true);
       try {
+        if (enhancedInstagramAccount) {
+          try {
+            const nativeRes = await authenticatedFetch(
+              `/api/v1/instagram/locations/search?accountId=${encodeURIComponent(enhancedInstagramAccount.id)}&q=${encodeURIComponent(query)}`,
+              { signal: controller.signal }
+            );
+            const nativeJson = await nativeRes.json();
+            const nativeSuggestions = Array.isArray(nativeJson?.data?.suggestions) ? nativeJson.data.suggestions : [];
+            if (nativeRes.ok && nativeSuggestions.length > 0) {
+              setInstagramLocationSearchConfigured(true);
+              setInstagramLocationSuggestions(nativeSuggestions);
+              setInstagramLocationSuggestionsOpen(true);
+              return;
+            }
+          } catch (error) {
+            if (error instanceof DOMException && error.name === "AbortError") return;
+          }
+        }
+
         const res = await authenticatedFetch(
           `/api/v1/locations/search?q=${encodeURIComponent(query)}`,
           { signal: controller.signal }
@@ -213,7 +247,9 @@ export function ComposerView() {
         const json = await res.json();
         if (!res.ok) throw new Error(json?.error?.message ?? "Location search failed");
         setInstagramLocationSearchConfigured(json?.data?.configured !== false);
-        setInstagramLocationSuggestions(Array.isArray(json?.data?.suggestions) ? json.data.suggestions : []);
+        setInstagramLocationSuggestions(
+          (Array.isArray(json?.data?.suggestions) ? json.data.suggestions : []).map((item: LocationSuggestion) => ({ ...item, source: "geoapify" as const }))
+        );
         setInstagramLocationSuggestionsOpen(true);
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;
@@ -228,7 +264,7 @@ export function ComposerView() {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [hasInstagram, instagramLocation, instagramLocationSearchEnabled]);
+  }, [hasInstagram, instagramLocation, instagramLocationSearchEnabled, enhancedInstagramAccount?.id]);
 
   const loadInstagramPublishingLimit = async (accountId: string) => {
     setInstagramLimitLoading((current) => ({ ...current, [accountId]: true }));
@@ -324,6 +360,7 @@ export function ComposerView() {
     setInstagramMusicTitle("");
     setInstagramMusicArtist("");
     setInstagramLocation("");
+    setInstagramLocationId("");
     setInstagramTagInput("");
     setInstagramTaggedPeople([]);
     setInstagramCollaboratorInput("");
@@ -565,6 +602,7 @@ export function ComposerView() {
               musicTitle: instagramMusicTitle.trim() || undefined,
               musicArtist: instagramMusicArtist.trim() || undefined,
               location: instagramLocation.trim() || undefined,
+              locationId: instagramLocationId.trim() || undefined,
               taggedPeople: instagramTaggedPeople.length ? instagramTaggedPeople : undefined,
               collaborators: instagramCollaborators.length ? instagramCollaborators : undefined,
               firstComment: instagramFirstComment.trim() || undefined,
@@ -869,56 +907,40 @@ export function ComposerView() {
 
                   try {
                     const isVideo = isVideoFile;
-                    let uploadedUrl: string;
+                    const maxReelBytes = 1024 * 1024 * 1024;
+                    if (isVideo && file.size > maxReelBytes) {
+                      throw new Error("Reel/video is larger than Instagram's 1 GB publishing limit.");
+                    }
 
+                    let res: Response;
                     if (isVideo) {
-                      // Vercel caps serverless request bodies at 4.5 MB, so a
-                      // Reel can never be streamed through our own API. Ask the
-                      // server for a signed URL and send the file straight to
-                      // Supabase Storage; only the public URL comes back to us.
+                      // Stream large MP4/MOV files to the server as a raw body.
+                      // This avoids wrapping a large Reel in multipart FormData.
                       const videoType = file.type === "video/quicktime" || fileExtension === "mov" ? "video/quicktime" : "video/mp4";
-                      const signRes = await authenticatedFetch("/api/v1/upload/sign", {
+                      res = await authenticatedFetch("/api/v1/upload", {
                         method: "POST",
                         headers: {
                           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-                          "Content-Type": "application/json",
+                          "Content-Type": videoType,
+                          "X-File-Name": encodeURIComponent(file.name),
+                          "X-File-Size": String(file.size),
                         },
-                        body: JSON.stringify({
-                          filename: file.name,
-                          contentType: videoType,
-                          size: file.size,
-                        }),
-                      });
-                      const signJson = await signRes.json();
-                      if (!signRes.ok) {
-                        throw new Error(signJson.error?.message ?? "Could not start video upload");
-                      }
-
-                      const storageRes = await fetch(signJson.data.signedUrl, {
-                        method: "PUT",
-                        headers: { "Content-Type": videoType },
                         body: file,
                       });
-                      if (!storageRes.ok) {
-                        throw new Error(`Storage rejected the video (HTTP ${storageRes.status})`);
-                      }
-                      uploadedUrl = signJson.data.publicUrl;
                     } else {
                       const formData = new FormData();
                       formData.append("file", file);
-                      const res = await authenticatedFetch("/api/v1/upload", {
+                      res = await authenticatedFetch("/api/v1/upload", {
                         method: "POST",
                         headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
                         body: formData,
                       });
-                      const json = await res.json();
-                      if (!res.ok) throw new Error(json.error?.message ?? "Upload failed");
-                      uploadedUrl = json.data.url;
                     }
-
+                    const json = await res.json();
+                    if (!res.ok) throw new Error(json.error?.message ?? "Upload failed");
                     uploaded.push({
                       type: isVideoFile ? "video" : "image",
-                      url: uploadedUrl,
+                      url: json.data.url,
                       alt: file.name.replace(/\.[^.]+$/, "") || "Attached media",
                     });
                   } catch (error) {
@@ -1328,6 +1350,13 @@ export function ComposerView() {
                 </div>
               )}
 
+              {inferredInstagramType === "story" && composerMedia.length === 1 && (
+                <StoryEditor
+                  media={composerMedia[0]}
+                  onApplied={(url) => setComposerMedia(composerMedia.map((item, index) => index === 0 ? { ...item, url, type: "image" as const } : item))}
+                />
+              )}
+
               {composerMedia.some((m) => m.type === "image") && (
                 <div>
                   <div className="mb-2 flex items-center gap-1.5 text-xs font-medium">
@@ -1365,6 +1394,8 @@ export function ComposerView() {
                   <span>✓ Scheduling</span>
                   <span>✓ Reel share-to-feed</span>
                   <span>✓ Media validation</span>
+                  <span>✓ Caption @mentions</span>
+                  <span>{hasEnhancedInstagram ? "✓ Facebook-linked mode" : "○ Enhanced Facebook mode"}</span>
                 </div>
               </div>
 
@@ -1397,6 +1428,7 @@ export function ComposerView() {
                         value={instagramLocation}
                         onChange={(e) => {
                           setInstagramLocation(e.target.value);
+                          setInstagramLocationId("");
                           setInstagramLocationSearchEnabled(true);
                           setInstagramLocationSuggestionsOpen(true);
                         }}
@@ -1426,6 +1458,7 @@ export function ComposerView() {
                                 onMouseDown={(e) => e.preventDefault()}
                                 onClick={() => {
                                   setInstagramLocation(suggestion.formatted || suggestion.name);
+                                  setInstagramLocationId(suggestion.nativeId || "");
                                   setInstagramLocationSuggestions([]);
                                   setInstagramLocationSearchEnabled(false);
                                   setInstagramLocationSuggestionsOpen(false);
@@ -1446,11 +1479,11 @@ export function ComposerView() {
                           ) : (
                             !instagramLocationLoading && <div className="px-3 py-3 text-xs text-muted-foreground">No matching locations found.</div>
                           )}
-                          <div className="border-t border-border px-3 py-1.5 text-[9px] text-muted-foreground">Location suggestions by Geoapify.</div>
+                          <div className="border-t border-border px-3 py-1.5 text-[9px] text-muted-foreground">{instagramLocationSuggestions.some((item) => item.source === "meta") ? "Native Instagram locations via Meta Pages Search." : "Fallback location suggestions by Geoapify."}</div>
                         </div>
                       )}
                     </div>
-                    <div className="mt-1 text-[10px] leading-4 text-muted-foreground">Type at least 2 characters and choose a suggestion. Loomic will add the selected location visibly to the published Instagram caption as <span className="font-medium">📍 Location</span>. This is a caption fallback, not Instagram's native location header.</div>
+                    <div className="mt-1 text-[10px] leading-4 text-muted-foreground">{instagramLocationId ? <span className="font-medium text-success">✓ Native Instagram location selected. It will appear under the username on Facebook-linked Instagram publishing.</span> : hasEnhancedInstagram ? <>Search and choose a Meta place for the native Instagram location header. If Meta Pages Search is not approved for your app yet, Loomic falls back to <span className="font-medium">📍 Location</span> in the caption.</> : <>Current Instagram Login uses the visible <span className="font-medium">📍 Location</span> caption fallback. Connect through Facebook + linked Page to enable native location IDs.</>}</div>
                   </div>
 
                   <div>
@@ -1460,7 +1493,7 @@ export function ComposerView() {
                       <Button type="button" variant="outline" size="sm" className="h-9" onClick={() => addInstagramHandle("tag")}>Add</Button>
                     </div>
                     {instagramTaggedPeople.length > 0 && <div className="mt-2 flex flex-wrap gap-1.5">{instagramTaggedPeople.map((handle) => <button key={handle} type="button" onClick={() => setInstagramTaggedPeople(instagramTaggedPeople.filter((item) => item !== handle))} className="rounded-full border border-border bg-muted px-2 py-1 text-[10px] hover:border-destructive/50 hover:text-destructive">@{handle} ×</button>)}</div>}
-                    <div className="mt-1 text-[10px] leading-4 text-muted-foreground">Saved as tag instructions. Instagram Login currently does not grant tagging access, so apply these tags in Instagram.</div>
+                    <div className="mt-1 text-[10px] leading-4 text-muted-foreground">{nativeTaggingAvailable ? <span className="font-medium text-success">✓ Facebook-linked Instagram: Loomic sends these as native media tags for Feed images and the first image in a Carousel. Other connection types keep them as finishing instructions.</span> : <>Instagram Login does not expose native media tagging. Connect the Instagram account through Facebook + its linked Page to activate native tags.</>}</div>
                   </div>
 
                   <div>
@@ -1494,7 +1527,7 @@ export function ComposerView() {
 
               <div className="flex items-start gap-2 rounded-lg border border-amber-500/20 bg-amber-500/5 p-3 text-[10px] leading-4 text-muted-foreground">
                 <Info className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-600" />
-                These controls are editable and persist with drafts/scheduled posts. Loomic publishes every option Meta exposes; music-library selection, native location/tagging/collaborators, root first comment, filters/effects and stickers still require the Instagram app because the current Instagram Login publishing API does not expose them.
+                Caption @mentions are published exactly as typed. Facebook-linked Instagram connections can use native location IDs and supported media tags. The Story editor bakes text, drawings, decorative stickers and visual @mentions into image Stories. Instagram-native Story Mention/Music/Poll/Link stickers and collaborator/root-comment finishing still require Instagram.
               </div>
             </div>
           </div>

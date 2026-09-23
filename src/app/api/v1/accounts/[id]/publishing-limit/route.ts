@@ -1,7 +1,8 @@
 import { withHandler, ok, ApiError } from "@/lib/api-utils";
 import { db } from "@/lib/db";
 import { requireAccountAccess } from "@/lib/server-auth";
-import { getUsableSocialAccessToken } from "@/lib/social-publisher";
+import { decryptSecret } from "@/lib/secrets";
+import { instagramConnectionMethod } from "@/lib/instagram-connection";
 import { getInstagramPublishingLimit } from "@/lib/instagram-publisher";
 
 export const runtime = "nodejs";
@@ -22,8 +23,8 @@ export const GET = withHandler(null, async ({ req, ctx }) => {
     throw ApiError.badRequest("Connect this Instagram account with a real token first.");
   }
 
-  const token = await getUsableSocialAccessToken(account);
-  const limit = await getInstagramPublishingLimit(token, account.externalUserId);
+  const token = decryptSecret(account.accessToken);
+  const limit = await getInstagramPublishingLimit(token, account.externalUserId, { connectionMethod: instagramConnectionMethod(account.providerData) });
 
   return ok({
     ...limit,

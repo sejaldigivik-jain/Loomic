@@ -16,8 +16,10 @@ export interface InstagramNativeFinishOptions {
   /** Instagram licensed-music reference saved for the manual finishing step. */
   musicTitle?: string;
   musicArtist?: string;
-  /** Human-readable Instagram location the creator plans to add in-app. */
+  /** Human-readable Instagram location shown in Loomic. */
   location?: string;
+  /** Facebook Page ID for a native Instagram location tag when using Facebook Login. */
+  locationId?: string;
   /** Usernames to tag manually in Instagram after API publishing. */
   taggedPeople?: string[];
   /** Usernames to invite as collaborators manually in Instagram. */
@@ -119,6 +121,13 @@ export interface SocialAccount {
   /** The platform's numeric user ID (e.g. Instagram's IG business account ID).
    *  Required for real publishing — the Graph API needs this to create media containers. */
   externalUserId?: string;
+  /** How this Instagram account is connected. */
+  instagramConnectionMethod?: "instagram_login" | "facebook_login" | "meta_developer_token" | "unknown";
+  /** Linked Facebook Page metadata for enhanced Instagram publishing. */
+  instagramPageId?: string;
+  instagramPageName?: string;
+  supportsNativeInstagramTags?: boolean;
+  supportsNativeInstagramLocation?: boolean;
   /** Agency client assignment. */
   clientId?: string;
   clientName?: string;
