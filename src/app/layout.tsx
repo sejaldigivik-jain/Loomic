@@ -35,7 +35,9 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "Loomic" }],
   icons: {
-    icon: "/logo.svg",
+    icon: "/loomic-icon.svg",
+    shortcut: "/loomic-icon.svg",
+    apple: "/loomic-icon.svg",
   },
   openGraph: {
     title: "Loomic — Plan. Schedule. Publish.",

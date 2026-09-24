@@ -186,20 +186,20 @@ export function QueueView() {
   return (
     <div className="space-y-4 p-4 sm:p-6 lg:p-8">
       <Dialog open={Boolean(handoffPost)} onOpenChange={(open) => !open && setHandoffPostId(null)}>
-        <DialogContent className="max-w-3xl">
+        <DialogContent className="w-[calc(100vw-1.5rem)] max-w-[760px] max-h-[90vh] overflow-y-auto p-4 sm:p-6">
           <DialogHeader>
             <DialogTitle>Finish this Story in Instagram</DialogTitle>
             <DialogDescription>
               Instagram requires native Link and @Mention stickers to be added inside the Instagram app. Scan this QR code with your phone to continue.
             </DialogDescription>
           </DialogHeader>
-          <div className="grid gap-6 md:grid-cols-[220px_1fr]">
-            <div className="flex flex-col items-center gap-3 rounded-2xl border bg-white p-4">
-              {handoffUrl ? <QRCodeSVG value={handoffUrl} size={180} level="M" includeMargin /> : null}
+          <div className="grid min-w-0 gap-4 sm:gap-6 md:grid-cols-[220px_minmax(0,1fr)]">
+            <div className="flex min-w-0 flex-col items-center gap-3 rounded-2xl border bg-white p-3 sm:p-4">
+              {handoffUrl ? <div className="w-full max-w-[190px] [&>svg]:h-auto [&>svg]:w-full"><QRCodeSVG value={handoffUrl} size={180} level="M" includeMargin /></div> : null}
               <p className="text-center text-xs text-slate-600">Scan with your phone camera</p>
             </div>
-            <div className="space-y-4">
-              <div className="rounded-xl border bg-muted/30 p-4 text-sm">
+            <div className="min-w-0 space-y-3 sm:space-y-4">
+              <div className="rounded-xl border bg-muted/30 p-3 text-sm sm:p-4">
                 <div className="font-semibold">On your phone</div>
                 <ol className="mt-2 list-decimal space-y-1 pl-5 text-muted-foreground">
                   <li>Open the QR link.</li>
@@ -209,15 +209,15 @@ export function QueueView() {
                 </ol>
               </div>
               {handoffFinish?.storyLink && (
-                <div className="flex items-center gap-2 rounded-xl border p-3">
+                <div className="flex min-w-0 flex-col items-stretch gap-2 rounded-xl border p-3 sm:flex-row sm:items-center">
                   <div className="min-w-0 flex-1"><div className="text-xs text-muted-foreground">Link sticker</div><div className="truncate text-sm font-medium">{handoffFinish.storyLink}</div></div>
-                  <Button size="sm" variant="outline" onClick={() => copyNativeValue(handoffFinish.storyLink!, "Link")}><CopyIcon className="mr-1 h-4 w-4" />Copy</Button>
+                  <Button size="sm" variant="outline" className="w-full shrink-0 sm:w-auto" onClick={() => copyNativeValue(handoffFinish.storyLink!, "Link")}><CopyIcon className="mr-1 h-4 w-4" />Copy</Button>
                 </div>
               )}
               {handoffFinish?.storyMention && (
-                <div className="flex items-center gap-2 rounded-xl border p-3">
+                <div className="flex min-w-0 flex-col items-stretch gap-2 rounded-xl border p-3 sm:flex-row sm:items-center">
                   <div className="min-w-0 flex-1"><div className="text-xs text-muted-foreground">Mention sticker</div><div className="truncate text-sm font-medium">{handoffFinish.storyMention}</div></div>
-                  <Button size="sm" variant="outline" onClick={() => copyNativeValue(handoffFinish.storyMention!, "Mention")}><CopyIcon className="mr-1 h-4 w-4" />Copy</Button>
+                  <Button size="sm" variant="outline" className="w-full shrink-0 sm:w-auto" onClick={() => copyNativeValue(handoffFinish.storyMention!, "Mention")}><CopyIcon className="mr-1 h-4 w-4" />Copy</Button>
                 </div>
               )}
               {handoffMedia?.url && <Button asChild variant="outline" className="w-full"><a href={handoffMedia.url} target="_blank" rel="noopener noreferrer"><Download className="mr-2 h-4 w-4" />Open Story media</a></Button>}
