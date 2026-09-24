@@ -5,7 +5,7 @@ import { requirePostAccess } from "@/lib/server-auth";
 
 const schema = z.object({
   content: z.string().max(5000).nullable().optional(),
-  status: z.enum(["pending", "publishing", "published", "failed"]).optional(),
+  status: z.enum(["pending", "publishing", "published", "failed", "handoff"]).optional(),
   externalId: z.string().nullable().optional(),
   externalUrl: z.string().url().nullable().optional(),
   errorMessage: z.string().nullable().optional(),

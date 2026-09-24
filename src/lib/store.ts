@@ -104,10 +104,12 @@ export function derivePostStatus(post: Post): PostStatus {
   const anyPublishing = statuses.some((s) => s === "publishing");
   const anyFailed = statuses.some((s) => s === "failed");
   const anyPublished = statuses.some((s) => s === "published");
+  const anyHandoff = statuses.some((s) => s === "handoff");
 
   if (allPublished) return "published";
   if (anyPublishing) return "publishing";
-  if (anyPublished && anyFailed) return "published"; // partial success
+  if (anyPublished && (anyFailed || anyHandoff)) return "published"; // partial success
+  if (anyHandoff && !anyPublished && !anyFailed) return "handoff";
   if (anyFailed && !anyPublished) return "failed";
   return post.scheduledAt ? "scheduled" : "draft";
 }

@@ -133,6 +133,8 @@ export function ComposerView() {
   const [scheduleTime, setScheduleTime] = useState("10:00");
   const [instagramPostType, setInstagramPostType] = useState<InstagramPostType>("auto");
   const [instagramShareToFeed, setInstagramShareToFeed] = useState(true);
+  const [instagramStoryMention, setInstagramStoryMention] = useState("");
+  const [instagramStoryLink, setInstagramStoryLink] = useState("");
   const [instagramMusicTitle, setInstagramMusicTitle] = useState("");
   const [instagramMusicArtist, setInstagramMusicArtist] = useState("");
   const [instagramLocation, setInstagramLocation] = useState("");
@@ -169,6 +171,8 @@ export function ComposerView() {
       if (composerEditingId) {
         setInstagramPostType("auto");
         setInstagramShareToFeed(true);
+        setInstagramStoryMention("");
+        setInstagramStoryLink("");
         setInstagramMusicTitle("");
         setInstagramMusicArtist("");
         setInstagramLocation("");
@@ -191,6 +195,8 @@ export function ComposerView() {
     setInstagramPostType(editingPost.instagramOptions?.postType ?? "auto");
     setInstagramShareToFeed(editingPost.instagramOptions?.shareToFeed ?? true);
     const nativeFinish = editingPost.instagramOptions?.nativeFinish;
+    setInstagramStoryMention(nativeFinish?.storyMention ?? "");
+    setInstagramStoryLink(nativeFinish?.storyLink ?? "");
     setInstagramMusicTitle(nativeFinish?.musicTitle ?? "");
     setInstagramMusicArtist(nativeFinish?.musicArtist ?? "");
     setInstagramLocation(nativeFinish?.location ?? "");
@@ -357,6 +363,8 @@ export function ComposerView() {
   };
 
   const clearInstagramFinishingTools = () => {
+    setInstagramStoryMention("");
+    setInstagramStoryLink("");
     setInstagramMusicTitle("");
     setInstagramMusicArtist("");
     setInstagramLocation("");
@@ -371,6 +379,8 @@ export function ComposerView() {
 
   const copyInstagramFinishChecklist = async () => {
     const lines = [
+      instagramStoryMention.trim() ? `Story mention: ${instagramStoryMention.trim()}` : "",
+      instagramStoryLink.trim() ? `Story link: ${instagramStoryLink.trim()}` : "",
       instagramMusicTitle.trim() ? `Music: ${instagramMusicTitle.trim()}${instagramMusicArtist.trim() ? ` — ${instagramMusicArtist.trim()}` : ""}` : "",
       instagramLocation.trim() ? `Location: ${instagramLocation.trim()}` : "",
       instagramTaggedPeople.length ? `Tag people: ${instagramTaggedPeople.map((h) => `@${h}`).join(", ")}` : "",
@@ -599,6 +609,8 @@ export function ComposerView() {
             postType: instagramPostType,
             shareToFeed: instagramShareToFeed,
             nativeFinish: {
+              storyMention: instagramStoryMention.trim() || undefined,
+              storyLink: instagramStoryLink.trim() || undefined,
               musicTitle: instagramMusicTitle.trim() || undefined,
               musicArtist: instagramMusicArtist.trim() || undefined,
               location: instagramLocation.trim() || undefined,
@@ -665,9 +677,9 @@ export function ComposerView() {
   };
 
   return (
-    <div className="grid gap-6 p-4 sm:p-6 lg:grid-cols-[1fr_400px] lg:p-8">
+    <div className="grid min-w-0 gap-6 p-4 sm:p-6 lg:p-8 xl:grid-cols-[minmax(0,1fr)_400px]">
       {/* Left: editor */}
-      <div className="space-y-4">
+      <div className="min-w-0 space-y-4">
         {editingPost && (
           <div className="flex items-center justify-between rounded-xl border border-primary/30 bg-primary/5 px-4 py-3">
             <div>
@@ -1245,7 +1257,7 @@ export function ComposerView() {
       </div>
 
       {/* Right: live preview */}
-      <div className="space-y-3">
+      <div className="min-w-0 space-y-3">
         <div className="flex items-center justify-between">
           <span className="text-sm font-semibold">Live preview</span>
           <Badge variant="secondary" className="text-[10px]">
@@ -1353,6 +1365,12 @@ export function ComposerView() {
               {inferredInstagramType === "story" && composerMedia.length === 1 && (
                 <StoryEditor
                   media={composerMedia[0]}
+                  initialMention={instagramStoryMention}
+                  initialLink={instagramStoryLink}
+                  onNativeFeaturesChange={({ mention, link }) => {
+                    setInstagramStoryMention(mention ?? "");
+                    setInstagramStoryLink(link ?? "");
+                  }}
                   onApplied={(url) => setComposerMedia(composerMedia.map((item, index) => index === 0 ? { ...item, url, type: "image" as const } : item))}
                 />
               )}

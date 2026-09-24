@@ -9,6 +9,7 @@ type PublishResult = {
   externalId?: string;
   externalUrl?: string;
   errorMessage?: string;
+  handoffRequired?: boolean;
 };
 
 function isInstagramQuotaLimitError(message?: string): boolean {
@@ -85,6 +86,20 @@ async function publishTarget(targetId: string): Promise<PublishResult> {
   }
 
   if (account.platform === "instagram") {
+    const requestedType = instagramOptions?.postType ?? "auto";
+    const nativeFinish = instagramOptions?.nativeFinish;
+    const needsStoryHandoff = requestedType === "story" && Boolean(nativeFinish?.storyMention || nativeFinish?.storyLink);
+    if (needsStoryHandoff) {
+      const details = [
+        nativeFinish?.storyMention ? `Mention ${nativeFinish.storyMention}` : "",
+        nativeFinish?.storyLink ? `Link ${nativeFinish.storyLink}` : "",
+      ].filter(Boolean).join(" • ");
+      return {
+        success: false,
+        handoffRequired: true,
+        errorMessage: `Finish in Instagram: ${details}`,
+      };
+    }
     const igUserId = account.externalUserId;
     if (!igUserId) return { success: false, errorMessage: "Instagram external account ID is missing. Reconnect Instagram." };
     const igPost = {
@@ -96,7 +111,6 @@ async function publishTarget(targetId: string): Promise<PublishResult> {
     const context: InstagramPublishContext = {
       connectionMethod: instagramConnectionMethod(account.providerData),
     };
-    const requestedType = instagramOptions?.postType ?? "auto";
     return requestedType === "carousel" || (requestedType === "auto" && media.length > 1)
       ? publishInstagramCarousel(accessToken, igUserId, igPost as any, instagramOptions, context)
       : publishToInstagram(accessToken, igUserId, igPost as any, instagramOptions, context);
@@ -145,9 +159,11 @@ export async function publishPostById(postId: string) {
               publishedAt: new Date(),
               errorMessage: null,
             }
-          : quotaBlocked
-            ? { status: "pending", errorMessage: result.errorMessage ?? "Waiting for Instagram publishing quota" }
-            : { status: "failed", errorMessage: result.errorMessage ?? "Publishing failed" },
+          : result.handoffRequired
+            ? { status: "handoff", errorMessage: result.errorMessage ?? "Finish in Instagram" }
+            : quotaBlocked
+              ? { status: "pending", errorMessage: result.errorMessage ?? "Waiting for Instagram publishing quota" }
+              : { status: "failed", errorMessage: result.errorMessage ?? "Publishing failed" },
       });
       return { ...result, quotaBlocked };
     })
@@ -158,16 +174,19 @@ export async function publishPostById(postId: string) {
   const failed = freshTargets.filter((t) => t.status === "failed").length;
   const publishing = freshTargets.filter((t) => t.status === "publishing").length;
   const pending = freshTargets.filter((t) => t.status === "pending").length;
+  const handoff = freshTargets.filter((t) => t.status === "handoff").length;
   const quotaBlocked = results.some((result) => result.quotaBlocked === true);
   const finalStatus = publishing > 0
     ? "publishing"
     : pending > 0
       ? "scheduled"
-      : published > 0
-        ? "published"
-        : failed > 0
-          ? "failed"
-          : "scheduled";
+      : handoff > 0 && published === 0 && failed === 0
+        ? "handoff"
+        : published > 0
+          ? "published"
+          : failed > 0
+            ? "failed"
+            : "scheduled";
 
   const nextRetryAt = quotaBlocked && pending > 0
     ? new Date(Date.now() + INSTAGRAM_QUOTA_RETRY_MS)
@@ -182,7 +201,7 @@ export async function publishPostById(postId: string) {
     },
   });
 
-  return { postId, status: finalStatus, published, failed, pending, quotaBlocked, nextRetryAt, results };
+  return { postId, status: finalStatus, published, failed, pending, handoff, quotaBlocked, nextRetryAt, results };
 }
 
 export async function publishDuePosts(limit = 20) {

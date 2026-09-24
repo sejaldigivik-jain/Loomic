@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useMemo } from "react";
+import { QRCodeSVG } from "qrcode.react";
 import { motion } from "framer-motion";
 import {
   Clock,
@@ -15,11 +16,15 @@ import {
   Loader2,
   RefreshCw,
   ExternalLink,
+  Smartphone,
+  Copy as CopyIcon,
+  Download,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,6 +45,7 @@ const STATUS_FILTERS: { id: PostStatus | "all"; label: string; icon: typeof Cloc
   { id: "publishing", label: "Processing", icon: Loader2 },
   { id: "published", label: "Published", icon: CheckCircle2 },
   { id: "draft", label: "Drafts", icon: FileEdit },
+  { id: "handoff", label: "Finish in Instagram", icon: Smartphone },
   { id: "failed", label: "Failed", icon: AlertTriangle },
 ];
 
@@ -49,6 +55,7 @@ const STATUS_META: Record<PostStatus, { label: string; color: string; dot: strin
   published: { label: "Published", color: "text-success", dot: "bg-success" },
   draft: { label: "Draft", color: "text-muted-foreground", dot: "bg-muted-foreground" },
   failed: { label: "Failed", color: "text-danger", dot: "bg-danger" },
+  handoff: { label: "Finish in Instagram", color: "text-warning", dot: "bg-warning" },
 };
 
 const TARGET_STATUS_META: Record<TargetStatus, { label: string; color: string; dot: string; icon: typeof CheckCircle2 }> = {
@@ -56,6 +63,7 @@ const TARGET_STATUS_META: Record<TargetStatus, { label: string; color: string; d
   publishing: { label: "Processing", color: "text-warning", dot: "bg-warning animate-pulse", icon: Loader2 },
   published: { label: "Published", color: "text-success", dot: "bg-success", icon: CheckCircle2 },
   failed: { label: "Failed", color: "text-danger", dot: "bg-danger", icon: AlertTriangle },
+  handoff: { label: "Finish in Instagram", color: "text-warning", dot: "bg-warning", icon: Smartphone },
 };
 
 /**
@@ -73,6 +81,7 @@ export function QueueView() {
   const [filter, setFilter] = useState<PostStatus | "all">("all");
   const [query, setQuery] = useState("");
   const [createdBy, setCreatedBy] = useState("all");
+  const [handoffPostId, setHandoffPostId] = useState<string | null>(null);
   const creators = useMemo(() => Array.from(new Set(posts.map((p) => p.author.name))).sort(), [posts]);
 
   const filtered = useMemo(() => {
@@ -157,8 +166,65 @@ export function QueueView() {
     await retryFailedTargets(postId);
   };
 
+  const handleInstagramHandoff = (postId: string) => {
+    setHandoffPostId(postId);
+  };
+
+  const handoffPost = handoffPostId ? posts.find((item) => item.id === handoffPostId) ?? null : null;
+  const handoffFinish = handoffPost?.instagramOptions?.nativeFinish;
+  const handoffMedia = handoffPost?.media[0];
+  const handoffUrl = typeof window !== "undefined" && handoffPost && handoffMedia
+    ? `${window.location.origin}/instagram-handoff?media=${encodeURIComponent(handoffMedia.url)}&type=${encodeURIComponent(handoffMedia.type)}&mention=${encodeURIComponent(handoffFinish?.storyMention ?? "")}&link=${encodeURIComponent(handoffFinish?.storyLink ?? "")}`
+    : "";
+
+  const copyNativeValue = async (value: string, label: string) => {
+    if (!value) return;
+    await navigator.clipboard?.writeText(value);
+    toast.success(`${label} copied`);
+  };
+
   return (
     <div className="space-y-4 p-4 sm:p-6 lg:p-8">
+      <Dialog open={Boolean(handoffPost)} onOpenChange={(open) => !open && setHandoffPostId(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Finish this Story in Instagram</DialogTitle>
+            <DialogDescription>
+              Instagram requires native Link and @Mention stickers to be added inside the Instagram app. Scan this QR code with your phone to continue.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-6 md:grid-cols-[220px_1fr]">
+            <div className="flex flex-col items-center gap-3 rounded-2xl border bg-white p-4">
+              {handoffUrl ? <QRCodeSVG value={handoffUrl} size={180} level="M" includeMargin /> : null}
+              <p className="text-center text-xs text-slate-600">Scan with your phone camera</p>
+            </div>
+            <div className="space-y-4">
+              <div className="rounded-xl border bg-muted/30 p-4 text-sm">
+                <div className="font-semibold">On your phone</div>
+                <ol className="mt-2 list-decimal space-y-1 pl-5 text-muted-foreground">
+                  <li>Open the QR link.</li>
+                  <li>Save/open the prepared Story media.</li>
+                  <li>Copy the Link or @Mention below.</li>
+                  <li>Open Instagram, create a Story, select the media, then add Instagram's native sticker.</li>
+                </ol>
+              </div>
+              {handoffFinish?.storyLink && (
+                <div className="flex items-center gap-2 rounded-xl border p-3">
+                  <div className="min-w-0 flex-1"><div className="text-xs text-muted-foreground">Link sticker</div><div className="truncate text-sm font-medium">{handoffFinish.storyLink}</div></div>
+                  <Button size="sm" variant="outline" onClick={() => copyNativeValue(handoffFinish.storyLink!, "Link")}><CopyIcon className="mr-1 h-4 w-4" />Copy</Button>
+                </div>
+              )}
+              {handoffFinish?.storyMention && (
+                <div className="flex items-center gap-2 rounded-xl border p-3">
+                  <div className="min-w-0 flex-1"><div className="text-xs text-muted-foreground">Mention sticker</div><div className="truncate text-sm font-medium">{handoffFinish.storyMention}</div></div>
+                  <Button size="sm" variant="outline" onClick={() => copyNativeValue(handoffFinish.storyMention!, "Mention")}><CopyIcon className="mr-1 h-4 w-4" />Copy</Button>
+                </div>
+              )}
+              {handoffMedia?.url && <Button asChild variant="outline" className="w-full"><a href={handoffMedia.url} target="_blank" rel="noopener noreferrer"><Download className="mr-2 h-4 w-4" />Open Story media</a></Button>}
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: 12 }}
@@ -239,6 +305,7 @@ export function QueueView() {
           const hasFailures = post.targets.some((t) => t.status === "failed");
           const successCount = post.targets.filter((t) => t.status === "published").length;
           const failCount = post.targets.filter((t) => t.status === "failed").length;
+          const handoffCount = post.targets.filter((t) => t.status === "handoff").length;
 
           return (
             <motion.div
@@ -313,6 +380,7 @@ export function QueueView() {
                             className={cn(
                               "inline-flex items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11px] font-medium",
                               target.status === "failed" ? "border-danger/30 bg-danger/10 text-danger" :
+                              target.status === "handoff" ? "border-warning/30 bg-warning/10 text-warning" :
                               target.status === "publishing" ? "border-warning/30 bg-warning/10 text-warning" :
                               target.status === "published" ? "border-success/30 bg-success/10 text-success" :
                               "border-border bg-muted/40 text-muted-foreground"
@@ -336,6 +404,15 @@ export function QueueView() {
                           </span>
                         );
                       })}
+                      {handoffCount > 0 && !isPublishing && (
+                        <button
+                          onClick={() => handleInstagramHandoff(post.id)}
+                          className="inline-flex items-center gap-1 rounded-md border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning transition-colors hover:bg-warning/20"
+                        >
+                          <Smartphone className="h-3 w-3" />
+                          Finish in Instagram
+                        </button>
+                      )}
                       {hasFailures && !isPublishing && (
                         <button
                           onClick={() => handleRetry(post.id)}

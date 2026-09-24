@@ -35,7 +35,7 @@ export const GET = withHandler(null, async ({ req, ctx }) => {
 const patchSchema = z.object({
   content: z.string().max(5000).optional(),
   title: z.string().max(200).nullable().optional(),
-  status: z.enum(["draft", "scheduled", "published", "failed", "archived"]).optional(),
+  status: z.enum(["draft", "scheduled", "published", "failed", "handoff", "archived"]).optional(),
   scheduledAt: z.string().datetime().nullable().optional(),
   hashtags: z.array(z.string()).max(30).optional(),
   linkUrl: z.string().url().nullable().optional(),
@@ -47,6 +47,8 @@ const patchSchema = z.object({
       musicArtist: z.string().max(120).optional(),
       location: z.string().max(200).optional(),
       locationId: z.string().max(100).optional(),
+      storyMention: z.string().max(100).optional(),
+      storyLink: z.string().url().max(2048).optional(),
       taggedPeople: z.array(z.string().max(100)).max(20).optional(),
       collaborators: z.array(z.string().max(100)).max(10).optional(),
       firstComment: z.string().max(2200).optional(),

@@ -5,10 +5,10 @@
  */
 import { type PlatformId } from "./platforms";
 
-export type PostStatus = "draft" | "scheduled" | "publishing" | "published" | "failed";
+export type PostStatus = "draft" | "scheduled" | "publishing" | "published" | "failed" | "handoff";
 
 /** Per-account publish state — a single Post fans out into N targets. */
-export type TargetStatus = "pending" | "publishing" | "published" | "failed";
+export type TargetStatus = "pending" | "publishing" | "published" | "failed" | "handoff";
 
 export type InstagramPostType = "auto" | "feed" | "reel" | "story" | "carousel";
 
@@ -20,6 +20,10 @@ export interface InstagramNativeFinishOptions {
   location?: string;
   /** Facebook Page ID for a native Instagram location tag when using Facebook Login. */
   locationId?: string;
+  /** Native Story mention to add during Finish in Instagram. */
+  storyMention?: string;
+  /** Native Story Link sticker URL to add during Finish in Instagram. */
+  storyLink?: string;
   /** Usernames to tag manually in Instagram after API publishing. */
   taggedPeople?: string[];
   /** Usernames to invite as collaborators manually in Instagram. */
