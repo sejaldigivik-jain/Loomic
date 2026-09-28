@@ -606,21 +606,21 @@ export function ComposerView() {
       hashtags: composerContent.match(/#\w+/g) ?? [],
       instagramOptions: hasInstagram
         ? {
-            postType: instagramPostType,
-            shareToFeed: instagramShareToFeed,
-            nativeFinish: {
-              storyMention: instagramStoryMention.trim() || undefined,
-              storyLink: instagramStoryLink.trim() || undefined,
-              musicTitle: instagramMusicTitle.trim() || undefined,
-              musicArtist: instagramMusicArtist.trim() || undefined,
-              location: instagramLocation.trim() || undefined,
-              locationId: instagramLocationId.trim() || undefined,
-              taggedPeople: instagramTaggedPeople.length ? instagramTaggedPeople : undefined,
-              collaborators: instagramCollaborators.length ? instagramCollaborators : undefined,
-              firstComment: instagramFirstComment.trim() || undefined,
-              effectsNotes: instagramEffectsNotes.trim() || undefined,
-            },
-          }
+          postType: instagramPostType,
+          shareToFeed: instagramShareToFeed,
+          nativeFinish: {
+            storyMention: instagramStoryMention.trim() || undefined,
+            storyLink: instagramStoryLink.trim() || undefined,
+            musicTitle: instagramMusicTitle.trim() || undefined,
+            musicArtist: instagramMusicArtist.trim() || undefined,
+            location: instagramLocation.trim() || undefined,
+            locationId: instagramLocationId.trim() || undefined,
+            taggedPeople: instagramTaggedPeople.length ? instagramTaggedPeople : undefined,
+            collaborators: instagramCollaborators.length ? instagramCollaborators : undefined,
+            firstComment: instagramFirstComment.trim() || undefined,
+            effectsNotes: instagramEffectsNotes.trim() || undefined,
+          },
+        }
         : undefined,
       author: {
         name: user?.name ?? "Maya Chen",
@@ -926,20 +926,57 @@ export function ComposerView() {
 
                     let res: Response;
                     if (isVideo) {
-                      // Stream large MP4/MOV files to the server as a raw body.
-                      // This avoids wrapping a large Reel in multipart FormData.
-                      const videoType = file.type === "video/quicktime" || fileExtension === "mov" ? "video/quicktime" : "video/mp4";
-                      res = await authenticatedFetch("/api/v1/upload", {
+                      const videoType =
+                        file.type === "video/quicktime" || fileExtension === "mov"
+                          ? "video/quicktime"
+                          : "video/mp4";
+
+                      // Ask Loomic for a short-lived Supabase signed upload URL.
+                      const signRes = await authenticatedFetch("/api/v1/upload/sign", {
                         method: "POST",
                         headers: {
                           ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+                          "Content-Type": "application/json",
+                        },
+                        body: JSON.stringify({
+                          filename: file.name,
+                          contentType: videoType,
+                          size: file.size,
+                        }),
+                      });
+
+                      const signJson = await signRes.json();
+
+                      if (!signRes.ok || !signJson?.data?.signedUrl) {
+                        throw new Error(signJson?.error?.message ?? "Could not prepare video upload");
+                      }
+
+                      // Upload the video directly from the browser to Supabase Storage.
+                      const uploadRes = await fetch(signJson.data.signedUrl, {
+                        method: "PUT",
+                        headers: {
                           "Content-Type": videoType,
-                          "X-File-Name": encodeURIComponent(file.name),
-                          "X-File-Size": String(file.size),
                         },
                         body: file,
                       });
-                    } else {
+
+                      if (!uploadRes.ok) {
+                        const uploadError = await uploadRes.text().catch(() => "");
+                        throw new Error(uploadError || "Direct video upload failed");
+                      }
+
+                      // Keep the existing code below unchanged by providing the same response shape.
+                      res = new Response(
+                        JSON.stringify({
+                          data: {
+                            url: signJson.data.publicUrl,
+                          },
+                        }),
+                        {
+                          status: 200,
+                          headers: { "Content-Type": "application/json" },
+                        }
+                        ); } else {
                       const formData = new FormData();
                       formData.append("file", file);
                       res = await authenticatedFetch("/api/v1/upload", {
