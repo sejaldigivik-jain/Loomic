@@ -10,6 +10,7 @@ import {
   Crown,
   Pencil,
   Eye,
+  EyeOff,
   Trash2,
   Mail,
   Clock,
@@ -17,6 +18,7 @@ import {
   XCircle,
   MessageSquare,
   AlertCircle,
+
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -690,6 +692,7 @@ function CreateMemberDialog({ onClose, onCreated }: { onClose: () => void; onCre
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [role, setRole] = useState<TeamMember["role"]>("Editor");
   const [accounts, setAccounts] = useState<{ id: string; displayName: string; handle: string; platform: string }[]>([]);
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
@@ -733,6 +736,7 @@ function CreateMemberDialog({ onClose, onCreated }: { onClose: () => void; onCre
       setName("");
       setEmail("");
       setPassword("");
+      setShowPassword(false);
       setRole("Editor");
       setSelectedAccountIds([]);
       onClose();
@@ -766,7 +770,18 @@ function CreateMemberDialog({ onClose, onCreated }: { onClose: () => void; onCre
         <div className="grid gap-3 sm:grid-cols-2">
           <div className="space-y-2">
             <Label htmlFor="member-password">Temporary password</Label>
-            <Input id="member-password" type="password" minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Minimum 8 characters" required />
+            <div className="relative">
+              <Input id="member-password" type={showPassword ? "text" : "password"} minLength={8} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="Minimum 8 characters" className="pr-10" required />
+              <button
+                type="button"
+                onClick={() => setShowPassword((visible) => !visible)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground"
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
+              >
+                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
           </div>
           <div className="space-y-2">
             <Label>Role</Label>

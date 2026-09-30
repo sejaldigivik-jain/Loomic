@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Mail, Lock, User, ArrowRight, Sparkles, AlertCircle } from "lucide-react";
+import { X, Mail, Lock, User, ArrowRight, Sparkles, AlertCircle, Eye, EyeOff} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -15,6 +15,7 @@ export function AuthModal() {
   const { authMode, setAuthMode, signIn, register } = useSocialFlow();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +28,7 @@ export function AuthModal() {
 
   useEffect(() => {
     setError(null);
+    setShowPassword(false);
     if (authMode !== "reset") setPassword("");
   }, [authMode]);
 
@@ -227,7 +229,16 @@ export function AuthModal() {
                     </div>
                     <div className="relative">
                       <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                      <Input id="password" type="password" placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} className="h-11 pl-9" required autoComplete={isSignup || isReset ? "new-password" : "current-password"} />
+                      <Input id="password" type={showPassword ? "text" : "password"} placeholder="••••••••" value={password} onChange={(e) => setPassword(e.target.value)} className="h-11 pl-9 pr-10" required autoComplete={isSignup || isReset ? "new-password" : "current-password"} />
+                      <button
+                        type="button"
+                        onClick={() => setShowPassword((visible) => !visible)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground"
+                        aria-label={showPassword ? "Hide password" : "Show password"}
+                        aria-pressed={showPassword}
+                      >
+                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
                     </div>
                     {(isSignup || isReset) && <p className="text-[11px] text-muted-foreground">Use at least 8 characters.</p>}
                   </div>
