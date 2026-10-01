@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Mail, Lock, User, ArrowRight, Sparkles, AlertCircle, Eye, EyeOff} from "lucide-react";
+import { X, Mail, Lock, User, ArrowRight, Sparkles, AlertCircle, Eye, EyeOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,6 +16,8 @@ export function AuthModal() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [name, setName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -29,12 +31,15 @@ export function AuthModal() {
   useEffect(() => {
     setError(null);
     setShowPassword(false);
+    setShowConfirmPassword(false);
+    setConfirmPassword("");
     if (authMode !== "reset") setPassword("");
   }, [authMode]);
 
   function resetForm() {
     setEmail("");
     setPassword("");
+    setConfirmPassword("");
     setName("");
     setError(null);
   }
@@ -79,6 +84,10 @@ export function AuthModal() {
     if (isReset) {
       if (password.length < 8) {
         setError("Password must be at least 8 characters");
+        return;
+      }
+      if (password !== confirmPassword) {
+        setError("New password and confirm password do not match");
         return;
       }
       const token = typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("reset") : null;
@@ -241,6 +250,34 @@ export function AuthModal() {
                       </button>
                     </div>
                     {(isSignup || isReset) && <p className="text-[11px] text-muted-foreground">Use at least 8 characters.</p>}
+                  </div>
+                )}
+
+                {isReset && (
+                  <div className="space-y-1.5">
+                    <Label htmlFor="confirm-password">Confirm new password</Label>
+                    <div className="relative">
+                      <Lock className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        id="confirm-password"
+                        type={showConfirmPassword ? "text" : "password"}
+                        placeholder="••••••••"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        className="h-11 pl-9 pr-10"
+                        required
+                        autoComplete="new-password"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirmPassword((visible) => !visible)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md p-1 text-muted-foreground transition-colors hover:text-foreground"
+                        aria-label={showConfirmPassword ? "Hide confirm password" : "Show confirm password"}
+                        aria-pressed={showConfirmPassword}
+                      >
+                        {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                      </button>
+                    </div>
                   </div>
                 )}
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { db } from "@/lib/db";
-import { ok, withHandler } from "@/lib/api-utils";
+import { ApiError, ok, withHandler } from "@/lib/api-utils";
 import { signPasswordResetToken } from "@/lib/auth";
 import { sendTransactionalEmail } from "@/lib/email";
 import { assertRateLimit } from "@/lib/rate-limit";
@@ -12,6 +12,15 @@ const schema = z.object({
 });
 
 export const POST = withHandler(schema, async ({ req, body }) => {
+  const emailFrom = process.env.EMAIL_FROM || process.env.INVITE_FROM_EMAIL;
+  if (!process.env.RESEND_API_KEY || !emailFrom) {
+    throw new ApiError(
+      "password_reset_email_not_configured",
+      "Password reset email is not configured. Add RESEND_API_KEY and EMAIL_FROM in Vercel, then redeploy.",
+      503
+    );
+  }
+
   const email = body!.email;
   assertRateLimit(req, { namespace: "auth-forgot", limit: 5, windowMs: 15 * 60_000, discriminator: email });
   const user = await db.user.findUnique({ where: { email } });
